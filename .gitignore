@@ -1,0 +1,36 @@
+# 环境变量 (包含 API Key)
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# 日志
+*.log
+
+# Node / 前端
+node_modules/
+frontend/dist/
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Docker
+deploy/.env
+
+# 第三方仓库
+skills-main/
+
+# 临时脚本
+temp_*.py
+fix_*.py
+
+# 上传的文件
+uploads/
