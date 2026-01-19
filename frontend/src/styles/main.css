@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── 设计令牌 ── */
+:root {
+  --color-bg-primary: #F8F9FB;
+  --color-bg-secondary: #EDF0F4;
+  --color-surface: #FFFFFF;
+  --color-accent: #2563EB;
+  --color-accent-soft: #DBEAFE;
+  --color-danger: #DC2626;
+  --color-success: #16A34A;
+  --color-text-primary: #1E293B;
+  --color-text-secondary: #64748B;
+  --color-border: #E2E8F0;
+}
+
+/* ── 滚动条 ── */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* ── 基础排版 ── */
+body {
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── 脉冲环动画 ── */
+.pulse-ring-container {
+  position: relative;
+  display: inline-flex;
+}
+.pulse-ring {
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 2px solid var(--color-accent);
+  animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+@keyframes pulse-ring {
+  0% { transform: scale(0.8); opacity: 1; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+
+/* ── 打字机光标 ── */
+.typing-cursor::after {
+  content: '▊';
+  animation: blink 1s step-end infinite;
+  color: var(--color-accent);
+}
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+/* ── SSE 流式输出瞬间动效 ── */
+.token-enter {
+  animation: token-in 0.15s ease-out;
+}
+@keyframes token-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
