@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "smart-qa-agent-system"
 version = "1.0.0"
@@ -43,7 +47,11 @@ dependencies = [
 ]
 
 [project.scripts]
-smart-qa = "src.app.web:main"
+smart-qa = "smart_qa.web:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["smart_qa*"]
 
 [project.optional-dependencies]
 dev = [
@@ -71,6 +79,9 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.15.21",
 ]
+
+[tool.uv]
+package = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -77,6 +77,102 @@ workflow.add_edge("memory_writer", END)
 
 ---
 
+### 4. 多轮对话支持
+
+**设计文档位置：** 2.3 故障排查场景（多轮对话状态管理）  
+**对应代码：** `src/smart_qa/api/routes/chat.py`  
+**现有基础设施（但未接入）：**
+
+| 组件 | 状态 | 说明 |
+|------|------|------|
+| `RedisClient.get_messages()` | ✅ 已实现 | 从 Redis 读取历史消息 |
+| `RedisClient.update_session()` | ✅ 已实现 | 写入会话到 Redis |
+| `GET /session/{id}/history` | ✅ 已实现 | 历史查询 API |
+| `chat.py` 加载历史 | ❌ 未做 | 每次 `_create_initial_state` 重置 messages |
+| 场景内传历史上下文 | 🟡 仅 `handle_general` | Router/QAScenario 等没传历史 |
+
+**原因：** `chat.py` 的 `_create_initial_state()` 每次创建全states状态，不给 LangGraph MemorySaver 传递历史消息的机会。
+
+**修复方案：**
+
+```python
+# chat.py — 加载历史后拼入 state
+state = _create_initial_state(...)
+
+# 从 Redis 加载历史
+try:
+    history = await RedisClient.get_messages(state["session_id"])
+    if history:
+        # 把历史消息拼到当前消息前面
+        state["messages"] = history + state["messages"]
+except Exception:
+    pass  # 没有历史也不影响
+
+# 走 Agent
+result = await graph.ainvoke(state, config=config)
+
+# 保存本轮对话到 Redis
+await RedisClient.update_session(state["session_id"], {
+    "messages": result.get("messages", state["messages"]),
+    "intent": result.get("intent"),
+})
+```
+
+**面试加分点：** 多轮对话是面试官最容易验证的功能（"我连续问两个相关的问题，看它能不能理解指代关系"）。不做的话第一个演示场景就露馅。
+
+---
+
+### 5. 记忆层：用 LangGraph Store 替代手写 memory/
+
+**设计文档位置：** 3.3 记忆系统设计  
+**当前状态：**
+- `memory/cache.py`、`short_term.py`、`long_term.py`、`task_memory.py` 四个文件
+- 但 **没有任何代码 import 它们**——纯死代码
+- 实际靠 `LangGraph MemorySaver` + Redis（chat.py 里也没调）
+
+**方案：LangGraph Store（开源免费）**
+
+| 组件 | 包 | 费用 |
+|------|-----|------|
+| `BaseStore` | `langgraph`（已安装） | ✅ 免费 |
+| `InMemoryStore` | `langgraph`（已安装） | ✅ 免费，开发测试 |
+| `PostgresStore` | `langgraph-checkpoint-postgres` | ✅ 免费，需额外 pip 安装 |
+
+```python
+# 加入长期记忆存储
+from langgraph.store.postgres import PostgresStore
+
+store = PostgresStore(
+    connection_string="postgresql://user:pass@localhost:5432/agent"
+)
+
+graph = builder.compile(
+    checkpointer=memory,  # 短期记忆（已有 MemorySaver）
+    store=store,          # 长期记忆（新增）
+)
+
+# 在 Node 中使用
+async def router_node(state, config, *, store):
+    # store.put(): 写入长期记忆
+    await store.put(("users", user_id), "device", {"model": "X30 Pro", "sn": "SN123"})
+    
+    # store.search(): 查询长期记忆
+    results = await store.search(("users", user_id))
+```
+
+**好处：**
+- 零额外依赖（LangGraph 自带，PostgreSQL 已有）
+- 自动支持命名空间隔离（`("users", user_id)` 按用户分）
+- 和 MemorySaver 协同工作（短期 + 长期）
+- 可以删掉当前 4 个没用的 memory/*.py 文件
+
+**需要改动：**
+- `uv add langgraph-checkpoint-postgres`
+- `graph.py`: compile 时传入 `store=PostgresStore(...)`
+- 在各 Scenario 的 Node 中加 `store` 参数读写记忆
+
+---
+
 ## P1 — 功能缺失
 
 ### 4. `/chat/stream` 端点安全缺失
@@ -153,6 +249,41 @@ async def chat_stream(
 **设计文档位置：** 5.8 可观测  
 **对应代码：** `src/observability/` 有 Logger + Prometheus，无 LangSmith  
 **原因：** 需要 LangSmith API Key 配置
+
+### 13. OCR 后端扩展（可插拔，备选）
+
+**触发条件：** 知识库中出现大量扫描件/复杂版面文档  
+**当前方案：** PyMuPDF（文字 PDF 毫秒级）+ Tesseract（扫描件降级）  
+**待接入：** 百度 Unlimited-OCR（VLM 强 OCR，需 GPU 16GB+）
+
+```python
+# 架构设计：可插拔 OCRBackend 接口
+class OCRBackend(ABC):
+    @abstractmethod
+    def extract(self, pdf_path: str) -> str: ...
+
+class PyMuPDFBackend(OCRBackend): ...     # 文字PDF，默认
+class TesseractBackend(OCRBackend): ...    # 轻量OCR
+class UnlimitedOCRBackend(OCRBackend): ... # 重度扫描件，需GPU
+
+class OCRProcessor:
+    """自动选择最优 OCR 后端"""
+    def process(self, path: str) -> str:
+        backend = self._detect_best(path)
+        return backend().extract(path)
+```
+
+**不默认开启原因：**
+- 模型约 7B 参数（14GB），需要 CUDA GPU
+- 推理每页 3-10 秒（vs PyMuPDF 毫秒级）
+- 文字 PDF 场景下效果无差异
+
+| 场景 | 当前方案 | Unlimited-OCR | 切换条件 |
+|------|---------|---------------|---------|
+| 文字 PDF | ✅ PyMuPDF 毫秒级 | ❌ 杀鸡用牛刀 | 永远不需要 |
+| 扫描件 | 🟡 Tesseract 中等 | ✅ 版面理解强 | 扫描件占比 > 30% |
+| 表格/合同 | 🟡 unstructured 有限 | ✅ 结构理解强 | 需要提取表格关系 |
+| 用户上传图片 | ❌ 不支持 | ✅ VLM 原生支持 | P0 需求时才做 |
 
 ---
 
