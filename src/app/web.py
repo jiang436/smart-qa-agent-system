@@ -118,6 +118,13 @@ async def health():
     }
 
 
+def main():
+    """CLI 入口: uv run smart-qa"""
+    import uvicorn
+
+    uvicorn.run("src.app.web:app", host="0.0.0.0", port=8000, reload=False)
+
+
 if __name__ == "__main__":
     import uvicorn
 
