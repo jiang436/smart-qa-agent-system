@@ -44,7 +44,9 @@ class _Logger:
                 colorize=True,
             )
             if self._loki_url:
-                _loguru.add(self._loki_sink, format="{time} {level} {name} {function} {message}", level="INFO", serialize=True)
+                _loguru.add(
+                    self._loki_sink, format="{time} {level} {name} {function} {message}", level="INFO", serialize=True
+                )
             self._loguru = True
             self._loguru_logger = _loguru
             return
@@ -72,6 +74,7 @@ class _Logger:
         """loguru 模式下不需要转换，stdlib 模式需要 {} → %s"""
         # 浅替换：防止 {:.1f} 等格式符被破坏
         import re
+
         msg = re.sub(r"\{([^}]*)\}", lambda m: f"%{m.group(1)}" if m.group(1) else "%s", msg)
         return msg, args
 

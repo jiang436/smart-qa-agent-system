@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { getKnowledgeStatus, uploadKnowledgeFile, reloadKnowledge, type KnowledgeStatus } from '@/api'
+import { getKnowledgeStatus, uploadKnowledgeFile, reloadKnowledge, getBm25Status, rebuildBm25, type KnowledgeStatus } from '@/api'
 
 const metrics = ref({
   totalRequests: 12580,
@@ -39,6 +39,13 @@ const reloading = ref(false)
 const reloadResult = ref('')
 const kbLoading = ref(false)
 const dragging = ref(false)
+
+// ── BM25 ──
+const bm25Status = ref<any>(null)
+const bm25Loading = ref(false)
+const bm25Rebuilding = ref(false)
+const bm25RebuildResult = ref('')
+const bm25StaleTip = ref(false)
 
 async function loadStatus() {
   kbLoading.value = true
@@ -91,6 +98,36 @@ function onDragOver(e: DragEvent) {
   dragging.value = true
 }
 function onDragLeave() { dragging.value = false }
+
+// ── BM25 ──
+
+async function loadBm25Status() {
+  bm25Loading.value = true
+  try {
+    const res = await getBm25Status()
+    bm25Status.value = res
+    if (res.built_at) {
+      const hours = (Date.now() - new Date(res.built_at.replace(' ', 'T')).getTime()) / 3600000
+      bm25StaleTip.value = hours > 1
+    }
+  } catch { /* ignore */ }
+  bm25Loading.value = false
+}
+
+async function doRebuildBm25() {
+  bm25Rebuilding.value = true
+  bm25RebuildResult.value = ''
+  try {
+    const res = await rebuildBm25()
+    bm25Status.value = res
+    bm25RebuildResult.value = `✅ 重建成功: ${res.doc_count} 篇文档, ${res.terms} 个词项`
+    bm25StaleTip.value = false
+  } catch (e: any) {
+    bm25RebuildResult.value = `❌ ${e.message || '重建失败'}`
+  }
+  bm25Rebuilding.value = false
+}
+
 async function onDrop(e: DragEvent) {
   e.preventDefault()
   dragging.value = false
@@ -101,7 +138,10 @@ async function onDrop(e: DragEvent) {
   }
 }
 
-onMounted(loadStatus)
+onMounted(() => {
+  loadStatus()
+  loadBm25Status()
+})
 </script>
 
 <template>
@@ -235,6 +275,50 @@ onMounted(loadStatus)
             </tbody>
           </table>
         </div>
+      </div>
+
+      <!-- BM25 Index -->
+      <div class="bg-white rounded-lg border border-slate-200 p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-xs font-semibold text-slate-500 uppercase">BM25 关键词索引</h3>
+          <div class="flex items-center gap-2">
+            <button @click="loadBm25Status" class="text-[11px] text-accent hover:underline">刷新</button>
+          </div>
+        </div>
+
+        <div v-if="bm25Loading" class="text-xs text-slate-400">加载中…</div>
+        <template v-else-if="bm25Status">
+          <div class="flex items-center gap-4 mb-3 text-xs text-slate-600">
+            <span>文档数: <strong>{{ bm25Status.doc_count ?? 0 }}</strong></span>
+            <span>词项数: <strong>{{ bm25Status.terms ?? 0 }}</strong></span>
+            <span>构建时间: <code class="text-slate-700 font-mono">{{ bm25Status.built_at || '未构建' }}</code></span>
+          </div>
+
+          <!-- Tips: 提醒重建 -->
+          <div v-if="bm25StaleTip" class="flex items-start gap-2 mb-3 p-2.5 bg-amber-50 border border-amber-200 rounded-lg">
+            <span class="text-amber-500 text-sm leading-none mt-0.5">⏰</span>
+            <div class="text-xs text-amber-800">
+              <p class="font-medium">索引可能已过时</p>
+              <p class="mt-0.5 text-amber-600">上次构建时间较早，如知识库有新文件上传或修改，建议重建索引以确保检索结果准确。</p>
+            </div>
+          </div>
+
+          <!-- Tips: 空索引 -->
+          <div v-else-if="!bm25Status.doc_count" class="flex items-start gap-2 mb-3 p-2.5 bg-slate-50 border border-slate-200 rounded-lg">
+            <span class="text-slate-400 text-sm leading-none mt-0.5">ℹ️</span>
+            <div class="text-xs text-slate-600">
+              <p>BM25 索引为空，请先构建。</p>
+            </div>
+          </div>
+
+          <button @click="doRebuildBm25" :disabled="bm25Rebuilding"
+            class="px-3 py-1.5 text-xs font-medium bg-accent text-white rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors">
+            {{ bm25Rebuilding ? '重建中…' : '重建索引' }}
+          </button>
+          <div v-if="bm25RebuildResult" class="mt-2 text-xs" :class="bm25RebuildResult.startsWith('✅') ? 'text-success' : 'text-red-500'">
+            {{ bm25RebuildResult }}
+          </div>
+        </template>
       </div>
 
       <!-- Intent distribution -->

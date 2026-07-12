@@ -131,3 +131,13 @@ export async function reloadKnowledge(): Promise<any> {
   const res = await fetch(`${BASE}/knowledge/reload`, { method: 'POST' })
   return res.json()
 }
+
+export async function getBm25Status(): Promise<any> {
+  const res = await fetch(`${BASE}/knowledge/bm25/status`)
+  return res.json()
+}
+
+export async function rebuildBm25(): Promise<any> {
+  const res = await fetch(`${BASE}/knowledge/bm25/rebuild`, { method: 'POST' })
+  return res.json()
+}

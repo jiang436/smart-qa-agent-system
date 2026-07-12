@@ -75,11 +75,15 @@ async def upload_file(file: UploadFile = File(...), db: AsyncSession = Depends(g
 
         splitter = SmartDocumentSplitter()
         doc_type = SmartDocumentSplitter.detect_type(tmp.name, text)
-        chunks = splitter.split(text, doc_type=doc_type, metadata={
-            "source": file.filename or "",
-            "title": os.path.splitext(file.filename or "upload")[0],
-            "category": "upload",
-        })
+        chunks = splitter.split(
+            text,
+            doc_type=doc_type,
+            metadata={
+                "source": file.filename or "",
+                "title": os.path.splitext(file.filename or "upload")[0],
+                "category": "upload",
+            },
+        )
         if not chunks:
             raise HTTPException(400, detail="文件分段后无有效内容")
 
@@ -104,6 +108,7 @@ async def upload_file(file: UploadFile = File(...), db: AsyncSession = Depends(g
 
         # 记录上传到 PostgreSQL
         import os as _os
+
         record = KnowledgeFile(
             filename=file.filename or "unknown",
             file_type=_os.path.splitext(file.filename or "unknown")[1].lower().lstrip(".") or "unknown",
@@ -115,6 +120,19 @@ async def upload_file(file: UploadFile = File(...), db: AsyncSession = Depends(g
         await db.commit()
 
         logger.info("知识库上传: file={} chunks={}", file.filename, len(chunks))
+
+        # 增量更新 BM25 索引
+        try:
+            from smart_qa.rag.retrieval import _shared_bm25
+
+            if _shared_bm25 and _shared_bm25.is_built:
+                bm25_texts = [c["content"] for c in chunks if len(c["content"]) > 20]
+                if bm25_texts:
+                    _shared_bm25.add_documents(bm25_texts)
+                    _shared_bm25.save()
+        except Exception as e:
+            logger.warning("BM25 增量更新失败: {}", e)
+
         return {"status": "ok", "file": file.filename, "chunks": len(chunks), "dimension": embedding.dimension}
     finally:
         os.unlink(tmp.name)
@@ -145,7 +163,13 @@ async def knowledge_status(db: AsyncSession = Depends(get_db)):
         client = _get_milvus()
         collection_name = settings.milvus_collection
         if not client.has_collection(collection_name):
-            return {"status": "empty", "collection": collection_name, "total_documents": 0, "dimension": 0, "uploaded_files": []}
+            return {
+                "status": "empty",
+                "collection": collection_name,
+                "total_documents": 0,
+                "dimension": 0,
+                "uploaded_files": [],
+            }
 
         client.load_collection(collection_name)
         stats = client.get_collection_stats(collection_name)
@@ -154,7 +178,13 @@ async def knowledge_status(db: AsyncSession = Depends(get_db)):
         # 从 PG 读上传记录
         result = await db.execute(select(KnowledgeFile).order_by(KnowledgeFile.uploaded_at.desc()))
         files = [
-            {"filename": r.filename, "file_type": r.file_type, "chunks": r.chunks, "dimension": r.dimension, "uploaded_at": r.uploaded_at.isoformat()}
+            {
+                "filename": r.filename,
+                "file_type": r.file_type,
+                "chunks": r.chunks,
+                "dimension": r.dimension,
+                "uploaded_at": r.uploaded_at.isoformat(),
+            }
             for r in result.scalars().all()
         ]
 
@@ -173,7 +203,79 @@ async def knowledge_status(db: AsyncSession = Depends(get_db)):
 async def list_uploaded_files(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(KnowledgeFile).order_by(KnowledgeFile.uploaded_at.desc()))
     files = [
-        {"filename": r.filename, "file_type": r.file_type, "chunks": r.chunks, "dimension": r.dimension, "uploaded_at": r.uploaded_at.isoformat()}
+        {
+            "filename": r.filename,
+            "file_type": r.file_type,
+            "chunks": r.chunks,
+            "dimension": r.dimension,
+            "uploaded_at": r.uploaded_at.isoformat(),
+        }
         for r in result.scalars().all()
     ]
     return {"files": files}
+
+
+# ── BM25 ──
+
+
+@router.get("/bm25/status")
+async def bm25_status():
+    """BM25 索引状态"""
+    from smart_qa.rag.retrieval import _shared_bm25
+
+    bm25 = _shared_bm25
+    if not bm25 or not bm25.is_built:
+        return {"status": "empty", "doc_count": 0, "built_at": "", "terms": 0}
+
+    return {
+        "status": "ok",
+        "doc_count": bm25.doc_count,
+        "built_at": bm25.built_at_str,
+        "terms": len(bm25.inverted_index),
+    }
+
+
+@router.post("/bm25/rebuild")
+async def bm25_rebuild():
+    """重建 BM25 索引并持久化"""
+    import json as _json
+    import os as _os
+
+    from smart_qa.knowledge.bm25 import BM25Index
+
+    _docs = []
+    for _root, _dirs, _files in _os.walk("data/knowledge"):
+        for _f in _files:
+            if _f.endswith(".md"):
+                with open(_os.path.join(_root, _f), encoding="utf-8") as _fh:
+                    for _p in _fh.read().split("\n\n"):
+                        if len(_p.strip()) > 20:
+                            _docs.append(_p.strip())
+
+    for _faq_file in ["data/faq_knowledge_base.json", "data/faq_consumables.json", "data/faq_troubleshooting.json"]:
+        try:
+            with open(_faq_file, encoding="utf-8") as _fh:
+                _faq_data = _json.load(_fh)
+            _entries = _faq_data if isinstance(_faq_data, list) else _faq_data.get("entries", [])
+            for _entry in _entries:
+                _q = _entry.get("question", "")
+                _a = _entry.get("answer", "")
+                if _q and _a and len(_q + _a) > 30:
+                    _docs.append(f"问：{_q}\n答：{_a}")
+        except Exception:
+            pass
+
+    bm25 = BM25Index()
+    bm25.build(_docs)
+    bm25.save()
+
+    from smart_qa.rag.retrieval import set_shared_bm25
+
+    set_shared_bm25(bm25)
+
+    return {
+        "status": "ok",
+        "doc_count": bm25.doc_count,
+        "built_at": bm25.built_at_str,
+        "terms": len(bm25.inverted_index),
+    }

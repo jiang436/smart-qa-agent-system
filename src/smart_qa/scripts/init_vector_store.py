@@ -19,7 +19,6 @@ from smart_qa.config import settings
 from smart_qa.knowledge.vector_store import get_embedding
 from smart_qa.rag.chunking import SmartDocumentSplitter
 
-
 # ═══════════════════════════════════════════
 # 文档读取
 # ═══════════════════════════════════════════
@@ -68,9 +67,15 @@ def read_documents(docs_dir: str) -> list[dict]:
                     break
 
             doc_type = SmartDocumentSplitter.detect_type(filename, content)
-            chunks = splitter.split(content, doc_type=doc_type, metadata={
-                "source": rel_path, "title": title, "category": category,
-            })
+            chunks = splitter.split(
+                content,
+                doc_type=doc_type,
+                metadata={
+                    "source": rel_path,
+                    "title": title,
+                    "category": category,
+                },
+            )
             for chunk in chunks:
                 documents.append(chunk)
             print(f"[InitVector] {filename} → {len(chunks)} chunks (type={doc_type})")
@@ -107,7 +112,9 @@ def ensure_collection(client: MilvusClient, collection_name: str, dim: int) -> s
     return collection_name
 
 
-def insert_to_milvus(client: MilvusClient, collection_name: str, chunks: list[dict], embedding_model, batch_size: int = 50):
+def insert_to_milvus(
+    client: MilvusClient, collection_name: str, chunks: list[dict], embedding_model, batch_size: int = 50
+):
     """批量将 chunk 写入 Milvus
 
     Args:
@@ -316,11 +323,15 @@ def init_vector_store(docs_dir: str = None, drop_existing: bool = False):
         documents = []
         for category, content in DEFAULT_KNOWLEDGE.items():
             doc_type = splitter.detect_type(f"builtin/{category}.md", content)
-            chunks = splitter.split(content, doc_type, {
-                "source": f"builtin/{category}.md",
-                "title": category,
-                "category": category,
-            })
+            chunks = splitter.split(
+                content,
+                doc_type,
+                {
+                    "source": f"builtin/{category}.md",
+                    "title": category,
+                    "category": category,
+                },
+            )
             documents.extend(chunks)
 
     # 7. 插入 Milvus

@@ -16,7 +16,6 @@ from pathlib import Path
 
 from smart_qa.observability.logger import logger
 
-
 # ═══════════════════════════════════════════
 # 基类
 # ═══════════════════════════════════════════
@@ -46,7 +45,7 @@ class PyMuPDFBackend(DocumentParserBackend):
 
         # TXT / MD 直接读
         if ext in (".txt", ".md", ".markdown"):
-            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            with open(filepath, encoding="utf-8", errors="replace") as f:
                 return f.read()
 
         # PDF 用 PyMuPDF

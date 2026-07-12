@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     embedding_model: str = "BAAI/bge-small-zh-v1.5"  # 模型名
     embedding_base_url: str = ""  # ollama/api 服务地址
 
+    # ── Server ──
+    host: str = "0.0.0.0"
+    port: int = 8000
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

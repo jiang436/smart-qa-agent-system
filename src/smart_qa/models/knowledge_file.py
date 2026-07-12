@@ -1,4 +1,5 @@
 """知识库上传文件记录表"""
+
 from datetime import datetime
 
 from sqlalchemy import DateTime, Integer, String
