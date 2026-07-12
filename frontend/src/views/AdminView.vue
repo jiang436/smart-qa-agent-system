@@ -203,6 +203,38 @@ onMounted(loadStatus)
         <div v-if="reloadResult" class="mt-2 text-xs" :class="reloadResult.startsWith('✅') ? 'text-success' : 'text-red-500'">
           {{ reloadResult }}
         </div>
+
+        <!-- Uploaded files list -->
+        <div v-if="kb?.uploaded_files?.length" class="mt-4">
+          <h4 class="text-xs font-medium text-slate-500 mb-2">上传记录</h4>
+          <table class="w-full text-xs">
+            <thead>
+              <tr class="text-slate-400 border-b border-slate-100">
+                <th class="text-left py-1.5 font-medium">文件名</th>
+                <th class="text-left py-1.5 font-medium">类型</th>
+                <th class="text-left py-1.5 font-medium">片段数</th>
+                <th class="text-left py-1.5 font-medium">维度</th>
+                <th class="text-left py-1.5 font-medium">时间</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="f in kb.uploaded_files" :key="f.filename + f.uploaded_at" class="border-b border-slate-50 hover:bg-slate-50">
+                <td class="py-2 text-slate-700 font-mono">{{ f.filename }}</td>
+                <td class="py-2">
+                  <span :class="[
+                    'px-1.5 py-0.5 rounded text-[10px] font-medium',
+                    f.file_type === 'pdf' ? 'bg-red-50 text-red-600' :
+                    f.file_type === 'md'  ? 'bg-blue-50 text-blue-600' :
+                    'bg-slate-100 text-slate-600'
+                  ]">{{ f.file_type?.toUpperCase() || '-' }}</span>
+                </td>
+                <td class="py-2 text-slate-500">{{ f.chunks }}</td>
+                <td class="py-2 text-slate-500">{{ f.dimension }}</td>
+                <td class="py-2 text-slate-400">{{ f.uploaded_at?.slice(0, 19)?.replace('T', ' ') || '-' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <!-- Intent distribution -->
