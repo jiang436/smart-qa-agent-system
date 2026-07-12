@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     max_agent_steps: int = 15
     agent_timeout: int = 30
 
+    # ── Embedding ──
+    embedding_backend: str = "local"  # local / ollama / api
+    embedding_model: str = "BAAI/bge-small-zh-v1.5"  # 模型名
+    embedding_base_url: str = ""  # ollama/api 服务地址
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

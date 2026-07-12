@@ -4,9 +4,11 @@ from fastapi import APIRouter
 
 from .approval import router as approval_router
 from .chat import router as chat_router
+from .knowledge import router as knowledge_router
 from .session import router as session_router
 
 router = APIRouter()
 router.include_router(chat_router)
 router.include_router(session_router)
 router.include_router(approval_router)
+router.include_router(knowledge_router)

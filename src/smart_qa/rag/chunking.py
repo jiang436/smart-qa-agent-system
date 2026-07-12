@@ -86,12 +86,16 @@ class SmartDocumentSplitter:
         else:
             chunks = self._split_recursive(text, meta)  # 默认递归切分
 
+        avg_size = 0
+        if chunks:
+            total = sum(len(c.get("content", "")) for c in chunks)
+            avg_size = round(total / len(chunks), 1)
         logger.info(
-            "文档分片 type={} len={} chunks={} avg_size={:.0f}",
+            "文档分片 type={} len={} chunks={} avg_size={}",
             doc_type,
             len(text),
             len(chunks),
-            sum(len(c["content"]) for c in chunks) / max(len(chunks), 1),
+            avg_size,
         )
         return chunks
 

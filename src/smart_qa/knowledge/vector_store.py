@@ -1,66 +1,71 @@
-"""Embedding 模型封装 — BAAI/bge-small-zh-v1.5"""
+"""Embedding 模型 — 统一入口
+
+使用方式:
+    from smart_qa.knowledge.vector_store import get_embedding
+
+    emb = get_embedding()
+    vectors = emb.encode(["查询文本"])
+    dim = emb.dimension       # 向量维度（切换后端后自动变化）
+
+后端切换:
+    通过环境变量 EMBEDDING_BACKEND 切换:
+      local  → sentence-transformers（默认）
+      ollama → Ollama 本地模型（需运行 ollama serve）
+      api    → OpenAI 兼容远程 API
+"""
+
+from __future__ import annotations
 
 import numpy as np
 
-from smart_qa.observability.logger import logger
+from smart_qa.config import settings
+from smart_qa.knowledge.embedding_backends import (
+    EmbeddingBackend,
+    create_embedding_backend,
+)
 
 
 class EmbeddingModel:
-    MODEL_NAME = "BAAI/bge-small-zh-v1.5"
-    NORMALIZE = True
-    _instance = None
+    """Embedding 模型（单例 + 可插拔后端）
 
-    def __new__(cls):
+    根据 settings.embedding_backend 自动选择后端。
+    """
+
+    _instance: EmbeddingModel | None = None
+    _backend: EmbeddingBackend | None = None
+
+    def __new__(cls) -> EmbeddingModel:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance._model = None
         return cls._instance
 
     def __init__(self):
-        if self._model is not None:
+        if self._backend is not None:
             return
-        try:
-            from sentence_transformers import SentenceTransformer
+        self._backend = create_embedding_backend(
+            backend=settings.embedding_backend,
+            model=settings.embedding_model,
+            api_key=getattr(settings, "llm_api_key", ""),
+            base_url=settings.embedding_base_url or settings.llm_base_url,
+        )
 
-            self._model = SentenceTransformer(self.MODEL_NAME)
-            logger.info("Embedding 模型已加载: {}", self.MODEL_NAME)
-        except Exception as e:
-            logger.warning("Embedding 本地模型加载失败，回退 API 模式: {}", e)
-            self._model = "api_fallback"
+    @property
+    def dimension(self) -> int:
+        if self._backend is None:
+            return 512
+        return self._backend.dimension
 
     def encode(self, texts: str | list[str]) -> np.ndarray:
         is_single = isinstance(texts, str)
         if is_single:
             texts = [texts]
-
-        if self._model == "api_fallback":
-            return self._encode_via_api(texts)
-        else:
-            embeddings = self._model.encode(texts, normalize_embeddings=self.NORMALIZE)
-            result = np.array(embeddings)
-            return result[0:1] if is_single else result
-
-    def _encode_via_api(self, texts: list[str]) -> np.ndarray:
-        import json
-        import urllib.request
-
-        from smart_qa.config import settings
-
-        url = settings.llm_base_url.replace("/v1", "/embeddings")
-        headers = {"Authorization": f"Bearer {settings.llm_api_key}", "Content-Type": "application/json"}
-        data = json.dumps({"input": texts, "model": "text-embedding-ada-002"}).encode()
-        try:
-            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-            resp = json.loads(urllib.request.urlopen(req, timeout=10).read())
-            vectors = [item["embedding"] for item in resp["data"]]
-            return np.array(vectors, dtype=np.float32)
-        except Exception as e:
-            logger.warning("API Embedding 失败: {}", e)
-            return np.zeros((len(texts), 512), dtype=np.float32)
+        result = self._backend.encode(texts)
+        return result[0:1] if is_single else result
 
     def cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
         dot = np.dot(vec1, vec2)
-        return float(dot / (np.linalg.norm(vec1) * np.linalg.norm(vec2) + 1e-10))
+        norm = np.linalg.norm(vec1) * np.linalg.norm(vec2) + 1e-10
+        return float(dot / norm)
 
 
 def get_embedding() -> EmbeddingModel:
