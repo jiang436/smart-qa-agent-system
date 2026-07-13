@@ -62,13 +62,14 @@
 
 ### 11. Reranker（重排序）
 
-**对应代码：** `src/smart_qa/rag/reranker.py` 已实现，但 `MultiLayerRetriever` 未调用  
-**接入方式：** 在语义检索 top_k=20 后 rerank → top_k=3
+**对应代码：** `src/smart_qa/rag/reranker.py` ✅ 已实现 | `src/smart_qa/rag/retrieval.py` ✅ 已接入  
+**当前状态：** ✅ `retrieve()` 内部先取 top_k×3（≥20 条），再用 Reranker 精选到 `top_k`  
+**降级：** Cross-Encoder 不可用时 → 启发式打分（关键词重叠 + 精确匹配 + 标题加权）
 
 ### 12. Eval 驱动的 Prompt 版本管理
 
-**对应代码：** `src/smart_qa/evaluation/` 已实现数据集 + LLM-as-Judge，但无 CI 自动化  
-**需要：** 接入 CI Pipeline，每次改 Prompt 自动跑 Eval
+**对应代码：** `src/smart_qa/evaluation/` ✅ 全部实现  
+**当前状态：** ✅ `dataset.py`（18 条测试用例，6 个场景）| ✅ `metrics.py`（keyword_recall + summary）| ✅ `runner.py`（CLI: `uv run python -m smart_qa.evaluation.runner`）| ✅ GitLab CI（`.gitlab-ci.yml`，改 Prompt 自动跑评测）| ✅ pre-commit 钩子（提交前快速跑 11 条简单用例）
 
 ### 13. LangSmith 可观测
 

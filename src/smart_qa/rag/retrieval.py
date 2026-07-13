@@ -20,6 +20,7 @@ import re
 from smart_qa.knowledge.bm25 import BM25Index
 from smart_qa.knowledge.vector_store import get_embedding
 from smart_qa.observability.logger import logger
+from smart_qa.rag.reranker import Reranker
 
 # ── 停用词 ──
 _STOP_WORDS: set[str] = {
@@ -188,24 +189,40 @@ class MultiLayerRetriever:
         self.llm = llm_client
         self.bm25 = bm25_index or _load_knowledge_bm25() or BM25Index()
         self._bm25_built = self.bm25.doc_count > 0
+        self.reranker = Reranker()
 
     # ── 主入口 ──
 
     def retrieve(self, query: str, top_k: int = 10, mode: str = "cascade") -> dict:
-        """检索主入口
+        """检索主入口（带 Reranker 重排序）
 
         Args:
             query: 用户问题
-            top_k: 返回文档数
+            top_k: 返回文档数（reranker 从更多候选中精选）
             mode: "cascade" (串行降级) | "parallel" (并行+RRF融合)
 
-        两种模式:
-          cascade:  语义→改写→BM25→LLM, 逐层降级, 适合单路可靠场景
-          parallel: 语义+BM25 并行检索 → RRF融合排序, 适合多路互补场景
+        流程:
+          1. 内部先取更多文档 (top_k * 3, 至少 20) 保证召回率
+          2. Reranker Cross-Encoder 精确打分
+          3. 返回精选的 top_k 条
         """
+        # 内部多取一些, 供 reranker 精选
+        retrieve_k = max(top_k * 3, 20)
+
         if mode == "parallel":
-            return self._parallel_retrieve(query, top_k)
-        return self._cascade_retrieve(query, top_k)
+            result = self._parallel_retrieve(query, retrieve_k)
+        else:
+            result = self._cascade_retrieve(query, retrieve_k)
+
+        # Reranker 重排序
+        docs = result.get("docs", [])
+        if len(docs) > top_k and self.reranker:
+            docs = self.reranker.rerank(query, docs, top_k=top_k)
+            result["docs"] = docs
+            result["total"] = len(docs)
+            result["note"] = (result.get("note", "") + f" | Reranker {len(docs)}/{retrieve_k}").lstrip(" |").strip()
+
+        return result
 
     def _cascade_retrieve(self, query: str, top_k: int) -> dict:
         """四层召回，逐层降级

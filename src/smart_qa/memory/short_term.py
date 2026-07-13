@@ -16,6 +16,7 @@ from smart_qa.observability.logger import logger
 @dataclass
 class Message:
     """对话消息"""
+
     role: str  # user / assistant / system
     content: str
     metadata: dict | None = None
@@ -24,6 +25,7 @@ class Message:
 @dataclass
 class CompressedResult:
     """记忆压缩结果"""
+
     summary: str = ""
     recent_messages: list[Message] = field(default_factory=list)
     user_profile_snapshot: dict | None = None
@@ -53,13 +55,13 @@ class MemoryCompressor:
         if not messages:
             return CompressedResult()
 
-        recent = messages[-self.window_size:] if len(messages) > self.window_size else messages
+        recent = messages[-self.window_size :] if len(messages) > self.window_size else messages
 
         # 尝试用 LLM 生成摘要
         summary = ""
         if self.llm and len(messages) > self.window_size:
             try:
-                summary = await self._summarize(messages[:-self.window_size])
+                summary = await self._summarize(messages[: -self.window_size])
             except Exception as e:
                 logger.debug("记忆压缩失败: {}", e)
 

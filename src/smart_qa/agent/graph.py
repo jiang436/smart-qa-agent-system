@@ -127,13 +127,15 @@ async def memory_writer_node(state: dict, config, *, store) -> dict:
 
 _DEVICE_MODELS = ["X30 Pro", "X20 Pro", "T10", "X30", "X20", "R10", "R20"]
 _MODE_KEYWORDS = {
-    "安静模式": "quiet", "静音模式": "quiet", "安静": "quiet",
-    "强力模式": "strong", "强力": "strong",
-    "标准模式": "standard", "标准": "standard",
+    "安静模式": "quiet",
+    "静音模式": "quiet",
+    "安静": "quiet",
+    "强力模式": "strong",
+    "强力": "strong",
+    "标准模式": "standard",
+    "标准": "standard",
 }
-_HOME_PATTERN = __import__("re").compile(
-    r"([一二两三四五六七八九十\d]+)[室房](?:[一二两三四五六七八九十\d]+厅)?"
-)
+_HOME_PATTERN = __import__("re").compile(r"([一二两三四五六七八九十\d]+)[室房](?:[一二两三四五六七八九十\d]+厅)?")
 
 
 def _extract_user_query(state: dict) -> str:
@@ -172,6 +174,7 @@ def _extract_home_layout(text: str) -> str | None:
 # ═══════════════════════════════════════════
 # 通用场景处理器
 # ═══════════════════════════════════════════
+
 
 async def handle_general(state: dict) -> dict:
     """通用场景 — 分层响应规则
@@ -232,7 +235,10 @@ async def handle_general(state: dict) -> dict:
             history_text = "对话历史:\n" + "\n".join(recent) + "\n\n"
 
         prompt = (
-            persona + "\n\n" + history_text + f"用户刚说: {query}\n\n"
+            persona
+            + "\n\n"
+            + history_text
+            + f"用户刚说: {query}\n\n"
             + (
                 "请简短友好地回应，表明自己是智能家居客服小智，引导用户说出扫地机器人相关问题。"
                 if is_fresh
@@ -251,6 +257,7 @@ async def handle_general(state: dict) -> dict:
 # ═══════════════════════════════════════════
 # 图构建
 # ═══════════════════════════════════════════
+
 
 def build_graph(llm_client=None) -> StateGraph:
     """构建 Agent 编排图（MemorySaver + LangGraph Store 长期记忆）"""

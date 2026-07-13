@@ -1,0 +1,83 @@
+# GitLab CI — 提交 Prompt/Agent 改动时自动评测
+#
+# 依赖服务: PostgreSQL + Redis + Milvus
+# 在 GitLab Runner 上需配置好这些服务的网络可达。
+#
+# 环境变量 (CI/CD Settings → Variables):
+#   LLM_API_KEY         - LLM 提供商 API Key (必需)
+#   LLM_BASE_URL        - LLM API 地址 (必需)
+#   EVAL_SCENARIO       - 筛选场景 (可选, 空=全部)
+#   EVAL_DIFFICULTY     - 筛选难度 (可选, 空=全部)
+#   POSTGRES_DSN        - 默认 postgresql+asyncpg://postgres:password@postgres:5432/agent
+#   REDIS_URL           - 默认 redis://redis:6379/0
+#   MILVUS_HOST         - 默认 milvus
+#   EMBEDDING_BACKEND   - 默认 local
+#
+# 示例: 只跑 QA 场景
+#   variables:
+#     EVAL_SCENARIO: "qa"
+#
+# 示例: 只跑中等难度
+#   variables:
+#     EVAL_DIFFICULTY: "medium"
+
+stages:
+  - lint
+  - eval
+
+variables:
+  UV_VERSION: "0.6"
+  PYTHON_VERSION: "3.14"
+  POSTGRES_DSN: "postgresql+asyncpg://postgres:password@postgres:5432/agent"
+  REDIS_URL: "redis://redis:6379/0"
+  MILVUS_HOST: "milvus"
+  EMBEDDING_BACKEND: "local"
+  EVAL_SCENARIO: ""
+  EVAL_DIFFICULTY: ""
+
+# ── Lint ──
+
+ruff:
+  stage: lint
+  image: ghcr.io/astral-sh/uv:python$PYTHON_VERSION
+  script:
+    - uv sync --frozen
+    - uv run ruff check src/smart_qa/
+  only:
+    changes:
+      - "src/smart_qa/**/*.py"
+
+# ── Eval ──
+
+eval:
+  stage: eval
+  image: ghcr.io/astral-sh/uv:python$PYTHON_VERSION
+  services:
+    - name: postgres:17
+      alias: postgres
+    - name: redis:7
+      alias: redis
+    - name: milvusdb/milvus:v2.5.6
+      alias: milvus
+  script:
+    - uv sync --frozen
+    - |
+      if [ -n "$EVAL_SCENARIO" ] && [ -n "$EVAL_DIFFICULTY" ]; then
+        uv run python -m smart_qa.evaluation.runner --scenario "$EVAL_SCENARIO" --difficulty "$EVAL_DIFFICULTY"
+      elif [ -n "$EVAL_SCENARIO" ]; then
+        uv run python -m smart_qa.evaluation.runner --scenario "$EVAL_SCENARIO"
+      elif [ -n "$EVAL_DIFFICULTY" ]; then
+        uv run python -m smart_qa.evaluation.runner --difficulty "$EVAL_DIFFICULTY"
+      else
+        uv run python -m smart_qa.evaluation.runner
+      fi
+  artifacts:
+    paths:
+      - src/smart_qa/evaluation/reports/
+    expire_in: 30 days
+  only:
+    changes:
+      - "src/smart_qa/agent/prompts/**"
+      - "src/smart_qa/agent/**"
+      - "src/smart_qa/scenarios/**"
+      - "src/smart_qa/evaluation/**"

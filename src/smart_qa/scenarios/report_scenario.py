@@ -78,10 +78,7 @@ class ReportScenario:
             state = await agent.generate_report(state)
         except Exception as e:
             logger.error("报告生成异常: {}", e)
-            state["final_answer"] = (
-                "抱歉，生成报告时遇到了问题。\n"
-                "请稍后重试，或者联系人工客服获取帮助。"
-            )
+            state["final_answer"] = "抱歉，生成报告时遇到了问题。\n请稍后重试，或者联系人工客服获取帮助。"
             state["error"] = str(e)[:200]
 
         elapsed = time.time() - start_time

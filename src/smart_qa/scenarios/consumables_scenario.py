@@ -74,7 +74,11 @@ class ConsumablesScenario:
         full_context = query
         messages = state.get("messages", [])
         for m in messages[-4:-1]:
-            c = getattr(m, "content", "") if hasattr(m, "content") else (m.get("content", "") if isinstance(m, dict) else "")
+            c = (
+                getattr(m, "content", "")
+                if hasattr(m, "content")
+                else (m.get("content", "") if isinstance(m, dict) else "")
+            )
             full_context = c + " " + full_context
 
         device_model = ConsumablesScenario._identify_device(full_context, user_profile) or "X30 Pro"
@@ -85,7 +89,9 @@ class ConsumablesScenario:
 
         if not product:
             cats = service.get_all_categories()
-            state["final_answer"] = "X30 Pro 目前支持以下耗材类别，请问您需要哪种？\n" + "\n".join(f"  • {c}" for c in cats)
+            state["final_answer"] = "X30 Pro 目前支持以下耗材类别，请问您需要哪种？\n" + "\n".join(
+                f"  • {c}" for c in cats
+            )
             return state
 
         # ── 生成推荐 + 设置待确认 ──
@@ -120,20 +126,23 @@ class ConsumablesScenario:
         q = query.lower().strip()
 
         # 确认关键词
-        confirm = any(kw in q for kw in ["是", "确认", "下单", "买", "要", "好的", "可以", "嗯", "好", "行", "ok", "yes"])
+        confirm = any(
+            kw in q for kw in ["是", "确认", "下单", "买", "要", "好的", "可以", "嗯", "好", "行", "ok", "yes"]
+        )
         reject = any(kw in q for kw in ["不", "不要", "不用", "算了", "取消", "no", "别"])
 
         if confirm and not reject:
             return await ConsumablesScenario._place_order(user_id, pending, state)
         elif reject:
-            state["task_memory"] = {k: v for k, v in (state.get("task_memory") or {}).items() if k != "pending_purchase"}
+            state["task_memory"] = {
+                k: v for k, v in (state.get("task_memory") or {}).items() if k != "pending_purchase"
+            }
             state["final_answer"] = "好的，已取消订单。如果您以后需要，随时告诉我。"
             return state
         else:
             # 没明确确认也没拒绝 — 再问一次
             state["final_answer"] = (
-                f"您想购买「{pending.get('product_name', '')}」吗？\n"
-                f"回复「确认」下单，或「不用了」取消。"
+                f"您想购买「{pending.get('product_name', '')}」吗？\n回复「确认」下单，或「不用了」取消。"
             )
             return state
 
@@ -141,6 +150,7 @@ class ConsumablesScenario:
     async def _place_order(user_id: str, pending: dict, state: dict) -> dict:
         """创建订单"""
         from smart_qa.database.postgres import PostgresClient
+
         device_model = pending.get("device_model", "X30 Pro")
         consumable_type = pending.get("consumable_type", "")
         product_name = pending.get("product_name", "")
@@ -190,6 +200,7 @@ class ConsumablesScenario:
     @staticmethod
     def _identify_device(query: str, user_profile: dict = None) -> str | None:
         import re
+
         normalized = re.sub(r"(?i)x30[\s-]*pro", "X30 Pro", query)
         if "X30 Pro" in normalized:
             return "X30 Pro"

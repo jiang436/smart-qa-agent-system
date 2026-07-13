@@ -263,7 +263,9 @@ class RouterAgent:
         return state
 
     @staticmethod
-    def dispatch(state: dict) -> Literal["qa", "troubleshoot", "consumables", "device_control", "report", "general", "done"]:
+    def dispatch(
+        state: dict,
+    ) -> Literal["qa", "troubleshoot", "consumables", "device_control", "report", "general", "done"]:
         """根据意图分发到对应场景
 
         FAQ 命中（final_answer 已设）→ "done"，直接返回，跳过 RAG
