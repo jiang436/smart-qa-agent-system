@@ -59,7 +59,12 @@ async def upload_file(file: UploadFile = File(...), db: AsyncSession = Depends(g
     if not DocumentParser.is_supported(file.filename or ""):
         raise HTTPException(400, detail="不支持的文件类型，仅支持: .pdf / .md / .txt")
 
+    # 文件大小校验（上限 10MB）
+    MAX_FILE_SIZE = 10 * 1024 * 1024
     content_bytes = await file.read()
+    if len(content_bytes) > MAX_FILE_SIZE:
+        raise HTTPException(400, detail=f"文件过大，上限 10MB，当前 {len(content_bytes) / 1024 / 1024:.1f}MB")
+
     ext = os.path.splitext(file.filename or "upload")[1].lower()
     import tempfile
 

@@ -71,10 +71,27 @@
 **对应代码：** `src/smart_qa/evaluation/` ✅ 全部实现  
 **当前状态：** ✅ `dataset.py`（18 条测试用例，6 个场景）| ✅ `metrics.py`（keyword_recall + summary）| ✅ `runner.py`（CLI: `uv run python -m smart_qa.evaluation.runner`）| ✅ GitLab CI（`.gitlab-ci.yml`，改 Prompt 自动跑评测）| ✅ pre-commit 钩子（提交前快速跑 11 条简单用例）
 
-### 13. LangSmith 可观测
+### 13. Logfire 可观测
 
-**对应代码：** `src/smart_qa/observability/` 有 Logger + Prometheus，无 LangSmith  
-**原因：** 需要 LangSmith API Key 配置
+**对应代码：** `observability/logger.py` + `observability/metrics.py` + `observability/tracer.py`  
+**计划：** 用 Pydantic Logfire 替换三套独立组件（loguru + Prometheus + OTEL），实现:
+  - `logfire.instrument_fastapi(app)` — 自动追踪所有 API 请求
+  - `logfire.instrument_sqlalchemy(engine)` — 数据库查询耗时可视化
+  - `logfire.instrument_httpx()` — LLM 调用延迟追踪
+  - `logfire.instrument_pydantic()` — 模型校验/序列化日志
+  - 日志 + 指标 + 追踪合一，单点配置
+
+**选择理由（对比 LangSmith）：**
+  - 覆盖全栈（FastAPI/SQLAlchemy/httpx）而非仅 LangGraph 节点
+  - 替换现有 loguru+Prometheus+OTEL 三套组件为一套，减少维护成本
+  - Pydantic 原生支持，项目大量使用 Pydantic 模型
+  - 无 LangChain 生态锁定，面试有对比深度
+  - 可自托管（self-hosted），不依赖第三方云
+
+**面试阐述要点：**
+  - "Logfire 取代了传统的三件套：loguru（日志）、Prometheus（指标）、OpenTelemetry（追踪），用一套配置覆盖全栈可观测"
+  - "选 Logfire 而不是 LangSmith 是因为项目里只有 LangGraph 部分，还有 FastAPI、SQLAlchemy、httpx 需要追踪，Logfire 的 auto-instrumentation 零代码接入"
+  - "对 Pydantic 的原生支持让我们能直接看到模型校验失败的上下文，调试效率提升明显"
 
 ---
 

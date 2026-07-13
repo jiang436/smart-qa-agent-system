@@ -171,8 +171,15 @@ class EvalRunner:
 
 def cli():
     parser = argparse.ArgumentParser(description="Eval 评测运行器")
-    parser.add_argument("--scenario", type=str, default=os.environ.get("EVAL_SCENARIO"), help="筛选场景: qa/troubleshoot/consumables/...")
-    parser.add_argument("--difficulty", type=str, default=os.environ.get("EVAL_DIFFICULTY"), help="筛选难度: easy/medium/hard")
+    parser.add_argument(
+        "--scenario",
+        type=str,
+        default=os.environ.get("EVAL_SCENARIO"),
+        help="筛选场景: qa/troubleshoot/consumables/...",
+    )
+    parser.add_argument(
+        "--difficulty", type=str, default=os.environ.get("EVAL_DIFFICULTY"), help="筛选难度: easy/medium/hard"
+    )
     args = parser.parse_args()
 
     async def main():
