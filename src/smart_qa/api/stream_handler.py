@@ -17,6 +17,7 @@ class SSEStreamHandler:
         query: str,
         user_id: str,
         initial_state: dict[str, Any] | None = None,
+        output_filter=None,
     ) -> AsyncGenerator[str, None]:
         # 阶段 1: 意图识别
         yield SSEStreamHandler._format_event("status", {"stage": "意图识别", "message": "正在理解您的问题..."})
@@ -48,6 +49,9 @@ class SSEStreamHandler:
             intent = result.get("intent", "")
 
             if final_answer:
+                # 输出脱敏
+                if output_filter:
+                    final_answer = output_filter(final_answer)
                 yield SSEStreamHandler._format_event("status", {"stage": "生成", "message": "正在生成回答..."})
                 for ch in final_answer:
                     yield SSEStreamHandler._format_event("token", {"text": ch})

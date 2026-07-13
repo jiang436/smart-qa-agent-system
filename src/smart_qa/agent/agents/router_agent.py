@@ -33,6 +33,38 @@ class RouterAgent:
 
     # 意图关键词映射（无 LLM 时的降级方案）
     INTENT_KEYWORDS = {
+        "device_control": [
+            "开始清扫",
+            "开始打扫",
+            "停止清扫",
+            "停止打扫",
+            "暂停",
+            "充电",
+            "回充",
+            "回去充电",
+            "设备状态",
+            "状态",
+            "模式",
+            "安静模式",
+            "强力模式",
+            "定时清扫",
+            "定时",
+            "预约清扫",
+        ],
+        "report": [
+            "报告",
+            "统计",
+            "使用情况",
+            "使用数据",
+            "清洁记录",
+            "月度报告",
+            "使用分析",
+            "看看数据",
+            "生成",
+            "周报",
+            "月报",
+            "报表",
+        ],
         "qa": [
             "怎么",
             "如何",
@@ -231,7 +263,7 @@ class RouterAgent:
         return state
 
     @staticmethod
-    def dispatch(state: dict) -> Literal["qa", "troubleshoot", "consumables", "general", "done"]:
+    def dispatch(state: dict) -> Literal["qa", "troubleshoot", "consumables", "device_control", "report", "general", "done"]:
         """根据意图分发到对应场景
 
         FAQ 命中（final_answer 已设）→ "done"，直接返回，跳过 RAG
@@ -241,7 +273,7 @@ class RouterAgent:
             return "done"
 
         intent = state.get("intent", "general")
-        valid_intents = ["qa", "troubleshoot", "consumables", "general"]
+        valid_intents = ["qa", "troubleshoot", "consumables", "report", "device_control", "general"]
         if intent not in valid_intents:
             intent = "general"
         return intent
@@ -311,11 +343,11 @@ class RouterAgent:
 
         cot = load_cot_prompt("router")
         history_block = f"对话历史:\n{history}\n\n" if history else ""
-        prompt = f"判断意图(qa/troubleshoot/consumables/general):\n{cot}\n\n{history_block}用户: {query}\n意图:"
+        prompt = f"判断意图(qa/troubleshoot/consumables/report/device_control/general):\n{cot}\n\n{history_block}用户: {query}\n意图:"
         try:
             response = await self.llm.ainvoke(prompt)
             content = response.content if hasattr(response, "content") else str(response)
-            for i in ["qa", "troubleshoot", "consumables", "general"]:
+            for i in ["qa", "troubleshoot", "consumables", "report", "device_control", "general"]:
                 if i in content.lower():
                     return i
         except Exception:
@@ -324,7 +356,7 @@ class RouterAgent:
 
     def _keyword_classify(self, query: str) -> str:
         """基于关键词的意图分类（无 LLM 时的降级方案）"""
-        scores = {"qa": 0, "troubleshoot": 0, "consumables": 0}
+        scores = {"qa": 0, "troubleshoot": 0, "consumables": 0, "report": 0, "device_control": 0}
 
         for intent, keywords in self.INTENT_KEYWORDS.items():
             for kw in keywords:

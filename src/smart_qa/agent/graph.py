@@ -8,7 +8,9 @@ from smart_qa.agent.guards.loop_detector import LoopDetector
 from smart_qa.agent.state import AgentState
 from smart_qa.observability.logger import logger
 from smart_qa.scenarios.consumables_scenario import ConsumablesScenario
+from smart_qa.scenarios.device_control_scenario import DeviceControlScenario
 from smart_qa.scenarios.qa_scenario import QAScenario
+from smart_qa.scenarios.report_scenario import ReportScenario
 from smart_qa.scenarios.troubleshoot_scenario import TroubleshootScenario
 
 _memory = MemorySaver()
@@ -263,6 +265,8 @@ def build_graph(llm_client=None) -> StateGraph:
     workflow.add_node("qa", QAScenario.run)
     workflow.add_node("troubleshoot", TroubleshootScenario.run)
     workflow.add_node("consumables", ConsumablesScenario.run)
+    workflow.add_node("device_control", DeviceControlScenario.run)
+    workflow.add_node("report", ReportScenario.run)
     workflow.add_node("general_handler", handle_general)
     workflow.add_node("guard_check", loop_detector.check)
     workflow.add_node("memory_writer", memory_writer_node)
@@ -278,6 +282,8 @@ def build_graph(llm_client=None) -> StateGraph:
             "qa": "qa",
             "troubleshoot": "troubleshoot",
             "consumables": "consumables",
+            "device_control": "device_control",
+            "report": "report",
             "general": "general_handler",
             "done": "guard_check",
         },
@@ -286,6 +292,8 @@ def build_graph(llm_client=None) -> StateGraph:
     workflow.add_edge("qa", "guard_check")
     workflow.add_edge("troubleshoot", "guard_check")
     workflow.add_edge("consumables", "guard_check")
+    workflow.add_edge("device_control", "guard_check")
+    workflow.add_edge("report", "guard_check")
     workflow.add_edge("general_handler", "guard_check")
 
     workflow.add_conditional_edges(

@@ -139,6 +139,7 @@ async def chat_stream(
     request: ChatRequest,
     _rl: None = Depends(check_rate_limit),
     _sec: None = Depends(check_security),
+    security: SensitiveFilter = Depends(get_security),
 ):
     graph = get_agent_graph()
     state = _create_initial_state(request.user_id, request.message, request.session_id)
@@ -152,6 +153,7 @@ async def chat_stream(
             query=request.message,
             user_id=request.user_id,
             initial_state=state,
+            output_filter=security.check_output,
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},

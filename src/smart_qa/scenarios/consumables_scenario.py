@@ -1,28 +1,26 @@
-"""耗材管理场景 — 基于设备 + 耗材兼容表的配件推荐
+"""耗材管理场景 — 基于设备 + 耗材兼容表的配件推荐 + HITL 确认下单
 
-文档第 2.2 节:
-  用户: "边刷该换了，买什么型号？"
-  -> 意图识别 -> 设备识别 -> 兼容表查询 -> 更换周期判断 ->
-     原装/第三方推荐 -> HITL 二次确认 -> 订单创建
+核心流程（两轮对话）:
 
-核心流程:
-  1. 设备识别（从用户描述 / 用户画像 / 错误码反推型号）
-  2. 耗材兼容表查询（Pydantic 数据模型：型号 -> 兼容耗材列表）
-  3. 更换周期判断（根据上次更换时间判断是否确实到周期）
-  4. 推荐生成（原装 & 第三方并行推荐）
-  5. HITL 确认（让用户确认后再下单）
-  6. 订单创建（写入 PostgreSQL + 通知供应链）
+  第一轮: 推荐
+    1. 设备识别 → 2. 耗材兼容表查询 → 3. 推荐生成
+    4. 设置 state.task_memory.pending_purchase
+    5. 返回推荐 + 询问是否下单
 
-技术要点:
-  - HITL 状态机确保下单前用户确认
-  - 原装/第三方分列，说清区别
-  - 更换周期辅助判断（上次更换 < 30 天则提醒）
+  第二轮: 确认
+    1. RouterAgent 检测到 pending_purchase → 路由到 consumables
+    2. ConsumablesScenario 检测到 pending_purchase
+    3. 判断用户意图 (yes/no)
+    4. yes → 创建订单 (PostgreSQL) → 返回确认信息
+    5. no → 取消 → 返回取消信息
 """
+
+from __future__ import annotations
 
 import time
 
-from smart_qa.agent.agents.hitl import HITLManager
 from smart_qa.agent.state_utils import extract_user_query
+from smart_qa.observability.logger import logger
 from smart_qa.services.consumable_service import ConsumableService
 
 
@@ -33,14 +31,7 @@ class ConsumablesScenario:
         result_state = await ConsumablesScenario.run(state)
     """
 
-    _hitl_helper: HITLManager | None = None
     _consumable_service: ConsumableService | None = None
-
-    @classmethod
-    def _get_hitl_helper(cls, llm_client=None) -> HITLManager:
-        if cls._hitl_helper is None:
-            cls._hitl_helper = HITLManager(llm_client=llm_client)
-        return cls._hitl_helper
 
     @classmethod
     def _get_consumable_service(cls) -> ConsumableService:
@@ -49,94 +40,148 @@ class ConsumablesScenario:
         return cls._consumable_service
 
     @staticmethod
-    async def _naturalize(structured_text: str) -> str:
-        """用 LLM 把结构化数据转成自然对话"""
-        try:
-            from smart_qa.agent.persona import get_system_prompt
-            from smart_qa.deps import get_llm_client
-
-            llm = get_llm_client()
-            persona = get_system_prompt("consumables")
-            prompt = (
-                persona + "\n\n"
-                "请把下面的耗材推荐信息用自然对话的方式说一遍。\n"
-                "要求:\n"
-                "- 保留所有型号、价格、寿命等关键数据，一个都不能丢\n"
-                "- 用「您」称呼，语气温暖亲切\n"
-                "- 不要把信息写成列表，用自然段落表达\n"
-                "- 不要添加原文本中没有的耗材或价格信息\n\n" + structured_text + "\n\n"
-                "自然对话版:"
-            )
-            response = await llm.ainvoke(prompt)
-            result = response.content if hasattr(response, "content") else str(response)
-            return result.strip() or structured_text
-        except Exception:
-            return structured_text
-
-    @staticmethod
     async def run(state: dict) -> dict:
         """执行耗材管理场景
 
         状态机:
-          init -> 收集设备信息 -> 查询兼容表 -> 推荐 ->
-          hitl_confirm -> 创建订单 -> 完成
-
-        Args:
-            state: AgentState 字典
-
-        Returns:
-            更新后的 state，final_answer 已填充
+          init → 收集设备信息 → 查询兼容表 → 推荐 → HITL 确认 → 创建订单 → 完成
         """
-        time.time()
+        start = time.time()
         query = ConsumablesScenario._extract_query(state)
 
         if not query:
             state["final_answer"] = "请问您需要查询哪种耗材？或者告诉我您的设备型号，我帮您查兼容的配件。"
             return state
 
-        state.get("user_id", "anonymous")
+        user_id = state.get("user_id", "anonymous")
         user_profile = state.get("user_profile", {})
+        task_memory = state.get("task_memory") or {}
 
-        # 拼接上下文：设备识别用全文，耗材识别只用当前查询
+        # ═══════════════════════════════════════
+        # Phase 2: HITL 确认 — 用户对推荐做出回应
+        # ═══════════════════════════════════════
+        pending = task_memory.get("pending_purchase")
+        if pending:
+            result = await ConsumablesScenario._handle_approval(user_id, query, pending, state)
+            elapsed = time.time() - start
+            logger.info("耗材 HITL 完成 decision={} latency={:.1f}s", result.get("decision"), elapsed)
+            return result
+
+        # ═══════════════════════════════════════
+        # Phase 1: 推荐
+        # ═══════════════════════════════════════
+
         full_context = query
         messages = state.get("messages", [])
         for m in messages[-4:-1]:
-            c = (
-                getattr(m, "content", "")
-                if hasattr(m, "content")
-                else (m.get("content", "") if isinstance(m, dict) else "")
-            )
+            c = getattr(m, "content", "") if hasattr(m, "content") else (m.get("content", "") if isinstance(m, dict) else "")
             full_context = c + " " + full_context
 
-        # 1. 设备识别 — 从上下文提取（允许"X30 Pro"在上文出现过）
         device_model = ConsumablesScenario._identify_device(full_context, user_profile) or "X30 Pro"
-
-        # 2. 耗材识别 — 只用当前查询！避免"那主刷呢"被上一条"边刷"干扰
         service = ConsumablesScenario._get_consumable_service()
         consumable_type = service.identify_part(query) or ConsumablesScenario._detect_consumable(query)
 
-        # 3. 查询耗材
         product = service.get_product(consumable_type) if consumable_type else None
 
         if not product:
-            # 没识别到具体耗材类型，列出所有类别
             cats = service.get_all_categories()
-            state["final_answer"] = "X30 Pro 目前支持以下耗材类别，请问您需要哪种？\n" + "\n".join(
-                f"  • {c}" for c in cats
-            )
+            state["final_answer"] = "X30 Pro 目前支持以下耗材类别，请问您需要哪种？\n" + "\n".join(f"  • {c}" for c in cats)
             return state
 
-        # 4. 返回推荐
-        state["final_answer"] = (
+        # ── 生成推荐 + 设置待确认 ──
+        recommendation = (
             f"📱 设备: {device_model}\n"
             f"🔧 耗材: {product['name']}\n"
             f"📦 型号: {product['model']}\n"
             f"💰 价格: ¥{product['price']}\n"
             f"📅 建议更换周期: 约{product['life_days']}天\n"
             f"💡 {product['desc']}\n\n"
-            f"🛒 请前往 App → 商城 → 耗材配件 下单购买"
         )
+
+        # 保存待确认信息
+        pending_info = {
+            "device_model": device_model,
+            "consumable_type": consumable_type,
+            "product_name": product["name"],
+            "product_model": product["model"],
+            "price": product["price"],
+        }
+
+        state["task_memory"] = {**task_memory, "pending_purchase": pending_info}
+        state["final_answer"] = recommendation + "🛒 需要帮您下单购买吗？(回复「是」「确认」「下单」或「不用了」)"
+
+        elapsed = time.time() - start
+        logger.info("耗材推荐完成 latency={:.1f}s", elapsed)
         return state
+
+    @staticmethod
+    async def _handle_approval(user_id: str, query: str, pending: dict, state: dict) -> dict:
+        """处理用户对推荐的确认/拒绝"""
+        q = query.lower().strip()
+
+        # 确认关键词
+        confirm = any(kw in q for kw in ["是", "确认", "下单", "买", "要", "好的", "可以", "嗯", "好", "行", "ok", "yes"])
+        reject = any(kw in q for kw in ["不", "不要", "不用", "算了", "取消", "no", "别"])
+
+        if confirm and not reject:
+            return await ConsumablesScenario._place_order(user_id, pending, state)
+        elif reject:
+            state["task_memory"] = {k: v for k, v in (state.get("task_memory") or {}).items() if k != "pending_purchase"}
+            state["final_answer"] = "好的，已取消订单。如果您以后需要，随时告诉我。"
+            return state
+        else:
+            # 没明确确认也没拒绝 — 再问一次
+            state["final_answer"] = (
+                f"您想购买「{pending.get('product_name', '')}」吗？\n"
+                f"回复「确认」下单，或「不用了」取消。"
+            )
+            return state
+
+    @staticmethod
+    async def _place_order(user_id: str, pending: dict, state: dict) -> dict:
+        """创建订单"""
+        from smart_qa.database.postgres import PostgresClient
+        device_model = pending.get("device_model", "X30 Pro")
+        consumable_type = pending.get("consumable_type", "")
+        product_name = pending.get("product_name", "")
+
+        try:
+            from smart_qa.database.engine import get_session_factory
+            from smart_qa.database.postgres import PostgresClient
+
+            factory = get_session_factory()
+            async with factory() as session:
+                order = await PostgresClient.create_order(
+                    db=session,
+                    user_id=user_id,
+                    device_model=device_model,
+                    part_type=consumable_type,
+                    part_name=product_name,
+                    quantity=1,
+                    price=pending.get("price"),
+                    source="HITL",
+                )
+                await session.commit()
+
+            state["task_memory"] = {
+                k: v for k, v in (state.get("task_memory") or {}).items() if k != "pending_purchase"
+            }
+            state["final_answer"] = (
+                f"✅ 订单已创建！\n"
+                f"📦 {product_name}\n"
+                f"💰 ¥{pending.get('price', '?')}\n"
+                f"📋 订单号: {order.order_id}\n\n"
+                f"预计3-5个工作日送达，请注意查收。"
+            )
+        except Exception as e:
+            logger.error("订单创建失败: {}", e)
+            state["final_answer"] = "抱歉，下单时遇到了问题，请稍后重试或前往 App 商城购买。"
+
+        return state
+
+    # ═══════════════════════════════════════
+    # 工具方法（不变）
+    # ═══════════════════════════════════════
 
     @staticmethod
     def _extract_query(state: dict) -> str:
@@ -144,26 +189,16 @@ class ConsumablesScenario:
 
     @staticmethod
     def _identify_device(query: str, user_profile: dict = None) -> str | None:
-        """从查询文本或用户画像中识别设备型号"""
         import re
-
-        # 标准化：X30pro/X30 Pro/x30 pro/X30-Pro → X30 Pro
         normalized = re.sub(r"(?i)x30[\s-]*pro", "X30 Pro", query)
-
-        known_models = ["X30 Pro"]
-        for model in known_models:
-            if model.lower() in normalized.lower():
-                return model
-
+        if "X30 Pro" in normalized:
+            return "X30 Pro"
         if user_profile:
             return user_profile.get("device_model")
-
         return None
 
     @staticmethod
     def _detect_consumable(query: str) -> str | None:
-        """从查询文本中检测耗材类型（返回 ConsumableService 兼容的英文键名）"""
-        # 中文关键词 → 英文键名（与 ConsumableService.PART_SYNONYMS 对齐）
         consumable_map = {
             "side_brush": ["边刷", "侧刷", "边扫"],
             "hepa_filter": ["滤网", "hepa", "过滤网", "滤芯"],
@@ -189,64 +224,12 @@ class ConsumablesScenario:
             "lds_cover": ["雷达罩", "激光罩", "雷达盖", "激光雷达罩"],
             "power_adapter": ["电源适配器", "充电器", "适配器"],
         }
-
-        query_lower = query.lower()
+        q = query.lower()
         for en_key, keywords in consumable_map.items():
-            if any(kw in query_lower for kw in keywords):
+            if any(kw in q for kw in keywords):
                 return en_key
         return None
 
-    @staticmethod
-    def _check_renewal_cycle(
-        service, device_model: str, user_profile: dict, consumable_type: str | None
-    ) -> tuple[bool, int]:
-        """判断是否需要更换（False = 还不到更换时间）"""
-        last_renew = None
-        if user_profile:
-            consumable_key = f"{device_model}:{consumable_type}"
-            last_renew = user_profile.get("consumable_renew", {}).get(consumable_key)
-
-        if not last_renew:
-            return True, 0
-
-        try:
-            import datetime
-
-            from dateutil.parser import parse
-
-            last_date = parse(last_renew)
-            days_since = (datetime.datetime.now() - last_date).days
-            if days_since < 30:
-                return False, days_since
-            return True, days_since
-        except Exception:
-            return True, 0
-
-    @staticmethod
-    def _format_recommendation(compatibles: list[dict], device_model: str, consumable_type: str | None) -> str:
-        """格式化推荐信息"""
-        lines = [f"为您找到以下适配 {device_model} 的耗材:"]
-
-        for item in compatibles:
-            name = item.get("name", "")
-            sku = item.get("sku", "")
-            price = item.get("price", "")
-            lifetime = item.get("lifetime", "")
-            brand = item.get("brand", "原装")
-
-            parts = [f"  - {name} ({brand})"]
-            if price:
-                parts.append(f"    价格: {price}")
-            if lifetime:
-                parts.append(f"    建议更换周期: {lifetime}")
-            if sku:
-                parts.append(f"    型号: {sku}")
-            lines.extend(parts)
-
-        return "\n".join(lines)
-
     @classmethod
     def reset(cls):
-        """重置所有单例（用于测试清理）"""
-        cls._hitl_helper = None
         cls._consumable_service = None

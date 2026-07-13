@@ -28,46 +28,33 @@
 
 ### 4. 无（已在 LangGraph Store 中实现）
 
-### 5. `/chat/stream` 端点安全缺失
-
-**对应代码：** `src/smart_qa/api/routes/chat.py:79`
-
-```python
-@router.post("/chat/stream")
-async def chat_stream(
-    request: ChatRequest,
-    _rl: None = Depends(check_rate_limit),   # ✅
-    # _sec: None = Depends(check_security),  # ❌ 缺失
-):
-```
-
-**修复：** 添加 `_sec` 依赖。
+### 5. 无（已在 `/chat/stream` 安全修复中补齐 — input + output 双过滤）
 
 ### 6. 无（已在记忆层持久化中修复）
 
-### 7. Stream 端点缺少输出过滤
-
-**对应代码：** `src/smart_qa/api/stream_handler.py`  
-**修复：** SSEStreamHandler 中每段 token 输出前调 `security.check_output()`
-
----
+### 7. 无（已在 `/chat/stream` 安全修复中补齐 — output_filter={check_output}）
 
 ## P2 — 高阶功能
 
 ### 8. 报告生成 Agent
 
 **设计文档位置：** 2.4 耗材管理与购买推荐场景  
-**原因：** 用户需要"生成我的使用报告"功能，目前无对应 Scenario
+**对应代码：** `scenarios/report_scenario.py` + `agent/agents/report_agent.py` 已实现  
+**当前状态：** ✅ `ReportScenario.run()` 已实现，`RouterAgent` 已识别 report 意图，graph.py 已接入  
+**报告类型：** monthly / weekly / consumable / abnormal（根据用户问题自动检测）
 
-### 9. 设备控制（MCP 工具）
+### 9. 无（已在设备控制场景中实现 — IoT 模拟器 MCP）
 
-**对应代码：** `src/smart_qa/agent/tools/mcp_client.py` 已存在但未接入 Scenario  
-**原因：** 需要真实的 IoT 设备或模拟器
+**对应代码：** `scenarios/device_control_scenario.py` + `agent/tools/device.py` 已增强  
+**当前状态：** ✅ `DeviceControlScenario.run()` 已实现 | ✅ `DeviceManager` 新增 start_cleaning / stop_cleaning / return_to_charge / set_mode | ✅ Mock 数据含 3 个虚拟设备 | ✅ RouterAgent 识别 device_control 意图  
+**支持命令：** 查状态 / 开始清扫 / 停止 / 回充 / 切换模式(安静/标准/强力) / 定时任务
 
 ### 10. Human-in-the-Loop
 
 **设计文档位置：** 3.5.5 Agent 防无限循环设计  
-**原因：** 关键操作（定时打扫、付款）需要人类确认
+**对应代码：** `scenarios/consumables_scenario.py` 两阶段 HITL 确认  
+**当前状态：** ✅ 推荐 → `pending_purchase` → 用户确认/拒绝 → 订单创建/取消  
+**触发场景：** 耗材购买推荐（用户说"好/确认"→创建订单；"不用了"→取消）
 
 ---
 
