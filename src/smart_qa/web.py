@@ -1,0 +1,179 @@
+"""FastAPI 入口 — 智能问答 Agent 系统"""
+
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from smart_qa.api.routes import router
+from smart_qa.config import settings
+from smart_qa.database.engine import close_db, init_db
+from smart_qa.database.redis import close_redis, init_redis
+from smart_qa.observability.logger import logger
+from smart_qa.observability.metrics import setup_metrics
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理"""
+    try:
+        await init_redis()
+        logger.info("Redis 连接成功")
+    except Exception as e:
+        logger.warning("Redis 不可用: {}", str(e)[:100])
+    try:
+        await init_db()
+        logger.info("PostgreSQL 连接成功")
+    except Exception as e:
+        logger.warning("PostgreSQL 不可用: {}", str(e)[:100])
+
+    # 预加载 FAQ 快速匹配器（900 条常见问答，<10ms 命中）
+    try:
+        from smart_qa.knowledge.faq_matcher import get_faq_matcher
+
+        _faq = get_faq_matcher()
+        _faq_count = _faq.load(
+            [
+                "data/faq_knowledge_base.json",
+                "data/faq_consumables.json",
+                "data/faq_troubleshooting.json",
+            ]
+        )
+        logger.info("FAQ 快速匹配器已就绪 entries={}", _faq_count)
+    except Exception as e:
+        logger.warning("FAQ 匹配器加载失败: {}", str(e)[:80])
+
+    # 预加载 BM25 知识库（优先从磁盘加载，免每次重启重建）
+    try:
+        import os as _os
+
+        from smart_qa.knowledge.bm25 import BM25Index
+
+        _bm25 = BM25Index()
+
+        if _bm25.load():
+            # 磁盘有缓存 → 直接使用
+            pass
+        else:
+            # 无缓存 → 从文件构建后保存
+            _docs = []
+            for _root, _dirs, _files in _os.walk("data/knowledge"):
+                for _f in _files:
+                    if _f.endswith(".md"):
+                        with open(_os.path.join(_root, _f), encoding="utf-8") as _fh:
+                            for _p in _fh.read().split("\n\n"):
+                                if len(_p.strip()) > 20:
+                                    _docs.append(_p.strip())
+            # 加载 FAQ JSON
+            import json as _json
+
+            for _faq_file in [
+                "data/faq_knowledge_base.json",
+                "data/faq_consumables.json",
+                "data/faq_troubleshooting.json",
+            ]:
+                try:
+                    with open(_faq_file, encoding="utf-8") as _fh:
+                        _faq_data = _json.load(_fh)
+                    _entries = _faq_data if isinstance(_faq_data, list) else _faq_data.get("entries", [])
+                    for _entry in _entries:
+                        _q = _entry.get("question", "")
+                        _a = _entry.get("answer", "")
+                        if _q and _a and len(_q + _a) > 30:
+                            _docs.append(f"问：{_q}\n答：{_a}")
+                    logger.info("FAQ 已加载 file={} entries={}", _faq_file, len(_entries))
+                except Exception as _e:
+                    logger.warning("FAQ 加载失败 file={} err={}", _faq_file, str(_e)[:80])
+
+            if _docs:
+                _bm25.build(_docs)
+                _bm25.save()
+            else:
+                logger.warning("BM25 知识库为空")
+
+        from smart_qa.rag.retrieval import set_shared_bm25
+
+        set_shared_bm25(_bm25)
+        _bm25_status = f"docs={_bm25.doc_count} built_at={_bm25.built_at_str or '未构建'}"
+        logger.info("BM25 知识库已加载 {}", _bm25_status)
+    except Exception as e:
+        logger.warning("BM25 知识库加载失败: {}", e)
+
+    setup_metrics(app)
+    # 初始化 LangGraph Store（PostgreSQL 长期记忆）
+    try:
+        from langgraph.store.postgres import PostgresStore
+
+        from smart_qa.agent.graph import set_store
+
+        pg_dsn = settings.postgres_dsn.replace("+asyncpg", "")
+        store = PostgresStore.from_conn_string(pg_dsn).__enter__()
+        await store.setup()
+        set_store(store)
+        logger.info("LangGraph Store 已就绪 (PostgresStore)")
+    except Exception as e:
+        logger.warning("LangGraph Store 不可用: {}，使用 InMemoryStore", str(e)[:80])
+        from langgraph.store.memory import InMemoryStore
+
+        set_store(InMemoryStore())
+
+    # 初始化 Logfire 可观测
+    try:
+        from smart_qa.database.engine import _engine
+        from smart_qa.observability.logfire_setup import setup_logfire
+
+        await setup_logfire(app=app, engine=_engine)
+    except Exception as e:
+        logger.debug("Logfire 接入异常: {}", e)
+    yield
+    try:
+        await close_redis()
+    except Exception:
+        pass
+    try:
+        await close_db()
+    except Exception:
+        pass
+
+
+app = FastAPI(
+    title="智能问答 Agent 系统",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+app.include_router(router, prefix="/api/v1")
+
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "services": {
+            "db": "ok",
+            "redis": "ok",
+            "milvus": "ok",
+        },
+    }
+
+
+def main():
+    """CLI 入口: uv run smart-qa"""
+    import uvicorn
+
+    uvicorn.run("src.smart_qa.web:app", host=settings.host, port=settings.port, reload=False)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("src.smart_qa.web:app", host=settings.host, port=settings.port, reload=True)

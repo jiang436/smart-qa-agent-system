@@ -1,7 +1,22 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.11.0
+    rev: v0.15.21
     hooks:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+
+  # 本地 Eval 钩子 — 提交前快速跑 3 条核心用例
+  # 安装: pre-commit install
+  # 跳过: SKIP=eval-local git commit
+  - repo: local
+    hooks:
+      - id: eval-local
+        name: eval-local
+        description: "快速 Eval: 跑 3 条核心测试用例检查意图分类"
+        entry: uv run python -m smart_qa.evaluation.runner --difficulty easy 2>&1 | tail -15
+        language: system
+        pass_filenames: false
+        always_run: true
+        verbose: true
+        stages: [pre-commit]

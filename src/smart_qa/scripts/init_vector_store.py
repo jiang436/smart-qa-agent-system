@@ -1,0 +1,350 @@
+"""初始化向量库 — 将知识文档导入 Milvus
+
+读取 data/knowledge/ 目录下的文档，
+分段 → 嵌入 → 存入 Milvus 向量集合。
+
+Usage:
+    uv run python -m smart_qa.scripts.init_vector_store
+
+    或代码调用:
+    from smart_qa.scripts.init_vector_store import init_vector_store
+    init_vector_store()
+"""
+
+import os
+
+from pymilvus import DataType, MilvusClient
+
+from smart_qa.config import settings
+from smart_qa.knowledge.vector_store import get_embedding
+from smart_qa.rag.chunking import SmartDocumentSplitter
+
+# ═══════════════════════════════════════════
+# 文档读取
+# ═══════════════════════════════════════════
+
+
+def read_documents(docs_dir: str) -> list[dict]:
+    """递归读取 docs_dir 下所有支持的文档（md/txt/pdf）
+
+    Returns:
+        [{"content": "...", "source": "...", "title": "...", "category": "...", ...}]
+    """
+    from smart_qa.knowledge.document_parser import DocumentParser
+    from smart_qa.rag.chunking import SmartDocumentSplitter
+
+    parser = DocumentParser()
+    splitter = SmartDocumentSplitter()
+    documents = []
+
+    if not os.path.isdir(docs_dir):
+        print(f"[InitVector] 知识目录不存在: {docs_dir}")
+        return documents
+
+    for root, _dirs, files in os.walk(docs_dir):
+        for filename in files:
+            filepath = os.path.join(root, filename)
+            if not DocumentParser.is_supported(filepath):
+                continue
+
+            rel_path = os.path.relpath(filepath, docs_dir)
+            category = rel_path.split(os.sep)[0]
+
+            try:
+                content = parser.extract_text(filepath)
+            except Exception as e:
+                print(f"[InitVector] 读取失败: {filepath}: {e}")
+                continue
+
+            if not content.strip():
+                continue
+
+            title = filename.rsplit(".", 1)[0]
+            for line in content.split("\n")[:5]:
+                line = line.strip()
+                if line.startswith("# "):
+                    title = line[2:].strip()
+                    break
+
+            doc_type = SmartDocumentSplitter.detect_type(filename, content)
+            chunks = splitter.split(
+                content,
+                doc_type=doc_type,
+                metadata={
+                    "source": rel_path,
+                    "title": title,
+                    "category": category,
+                },
+            )
+            for chunk in chunks:
+                documents.append(chunk)
+            print(f"[InitVector] {filename} → {len(chunks)} chunks (type={doc_type})")
+
+    print(f"[InitVector] 已读取 {len(documents)} 个文档片段 (来自 {docs_dir})")
+    return documents
+
+
+# ═══════════════════════════════════════════
+# Milvus 操作（MilvusClient 新 API）
+# ═══════════════════════════════════════════
+
+
+def ensure_collection(client: MilvusClient, collection_name: str, dim: int) -> str:
+    """确保集合存在，不存在则创建"""
+    if client.has_collection(collection_name):
+        client.load_collection(collection_name)
+        print(f"[InitVector] 集合已存在: {collection_name} (dim={dim})")
+        return collection_name
+
+    schema = MilvusClient.create_schema(auto_id=True, enable_dynamic_field=False)
+    schema.add_field("id", datatype=DataType.INT64, is_primary=True)
+    schema.add_field("vector", datatype=DataType.FLOAT_VECTOR, dim=dim)
+    schema.add_field("content", datatype=DataType.VARCHAR, max_length=4096)
+    schema.add_field("source", datatype=DataType.VARCHAR, max_length=256)
+    schema.add_field("title", datatype=DataType.VARCHAR, max_length=256)
+    schema.add_field("category", datatype=DataType.VARCHAR, max_length=64)
+
+    index_params = client.prepare_index_params()
+    index_params.add_index(field_name="vector", metric_type="COSINE", index_type="IVF_FLAT", params={"nlist": 128})
+
+    client.create_collection(collection_name=collection_name, schema=schema, index_params=index_params)
+    print(f"[InitVector] 集合已创建: {collection_name} (dim={dim})")
+    return collection_name
+
+
+def insert_to_milvus(
+    client: MilvusClient, collection_name: str, chunks: list[dict], embedding_model, batch_size: int = 50
+):
+    """批量将 chunk 写入 Milvus
+
+    Args:
+        client: MilvusClient 实例
+        collection_name: 集合名
+        chunks: 文档 chunk 列表（须含 content / source / title / category）
+        embedding_model: EmbeddingModel 实例
+        batch_size: 批量插入大小
+    """
+    total = len(chunks)
+    inserted = 0
+
+    for i in range(0, total, batch_size):
+        batch = chunks[i : i + batch_size]
+        texts = [c["content"] for c in batch]
+        vectors = embedding_model.encode(texts)
+
+        data = [
+            {
+                "vector": vectors[idx].tolist(),
+                "content": batch[idx]["content"][:4096],
+                "source": batch[idx]["source"][:256],
+                "title": batch[idx]["title"][:256],
+                "category": batch[idx].get("category", "general")[:64],
+            }
+            for idx in range(len(batch))
+        ]
+        try:
+            client.insert(collection_name, data)
+            inserted += len(batch)
+            print(f"  [{inserted}/{total}] 已插入...")
+        except Exception as e:
+            print(f"  [ERROR] 批量插入失败: {e}")
+
+    client.flush(collection_name)
+    print(f"[InitVector] 插入完成: {inserted}/{total} 条")
+
+
+# ── 没有文档时的默认知识内容 ──
+
+DEFAULT_KNOWLEDGE = {
+    "consumables": """# 耗材兼容性指南
+
+## X30 Pro 耗材兼容表
+- 边刷: X30-SB-01 (原装), X30-SB-C (第三方兼容)
+- 主刷: X30-MB-01 (原装), 通用型-T (第三方)
+- HEPA滤网: X30-HF-01 (原装)
+- 拖布: X30-MP-01 (原装), 通用拖布-M (第三方)
+- 尘盒: X30-DB-01 (内置, 无需更换)
+
+## 更换周期建议
+- 边刷: 3-6个月 (根据使用频率)
+- 主刷: 6-12个月
+- HEPA滤网: 3-4个月
+- 拖布: 2-3个月
+- 建议定期检查磨损情况
+
+## T10 耗材兼容表
+- 边刷: T10-SB-01 (原装)
+- 主刷: T10-MB-01 (原装)
+- 滤网: T10-FL-01 (原装)
+
+## X20 Pro 耗材兼容表
+- 边刷: X20-SB-01 (原装), X20-SB-C (第三方)
+- 主刷: X20-MB-01 (原装)
+- 拖布: X20-MP-01 (原装)
+""",
+    "fault_troubleshooting": """# 故障排查指南
+
+## 常见错误码
+
+### E01 - 跌落传感器异常
+- 原因: 扫地机检测到悬空状态
+- 解决: 将扫地机放回充电座附近平整地面，重新启动
+
+### E02 - 轮子卡住
+- 原因: 驱动轮被异物缠绕或地毯卡住
+- 解决: 检查轮子是否被线缆/头发缠绕，清理异物后重启
+
+### E03 - 边刷不转
+- 原因: 边刷卡住或电机故障
+- 解决: 用干净布清理边刷轴，检查是否缠绕头发
+
+### E04 - 尘盒未安装
+- 原因: 尘盒未正确安装到位
+- 解决: 确认尘盒完全推入，听到咔哒声
+
+### E05 - 电池过热
+- 原因: 电池温度过高保护
+- 解决: 将设备移至阴凉处，待冷却后重新启动
+
+### E06 - 激光雷达异常
+- 原因: 激光雷达无法旋转或遮挡
+- 解决: 检查激光雷达是否有异物遮挡，清洁雷达表面
+
+### E07 - Wi-Fi 连接失败
+- 原因: 无法连接Wi-Fi网络
+- 解决: 检查路由器信号强度，重新配网
+
+### E08 - 水箱未安装
+- 原因: 拖地模式下水箱未安装
+- 解决: 安装水箱支架后再使用拖地功能
+
+## 常见问题排查
+
+### 扫地机不工作
+1. 检查电量是否充足（>15%）
+2. 检查是否在充电座范围内
+3. 尝试重启设备（长按开机键10秒）
+
+### 清扫不干净
+1. 检查边刷/主刷磨损情况
+2. 检查尘盒是否已满
+3. 确认吸力模式（安静/标准/强力）
+
+### 无法回充
+1. 充电座指示灯是否亮
+2. 充电座周围是否有障碍物
+3. 尝试手动对齐充电触点
+
+### 噪音过大
+1. 检查主刷/边刷是否有异物缠绕
+2. 检查滚轮是否卡住
+3. 确认是否在强力模式下运行
+
+### 地图丢失
+1. 检查是否在重新建图模式
+2. 确认激光雷达无遮挡
+3. 检查App版本和固件是否最新
+""",
+    "user_manual": """# 产品使用手册
+
+## 快速开始
+1. 将充电座靠墙放置，两侧留出0.5米空间
+2. 安装边刷（对准卡槽按下）
+3. 长按开机键3秒启动设备
+4. 下载App并注册账号
+5. 按App提示完成Wi-Fi配网
+
+## 定时清扫设置
+1. 打开App → 设备 → 定时清扫
+2. 点击添加定时任务
+3. 选择时间、清扫模式、清扫区域
+
+## 清扫模式
+- 安静模式: 低噪音，适合夜间
+- 标准模式: 平衡清洁力和噪音
+- 强力模式: 最大吸力
+- 拖地模式: 需要安装水箱和拖布
+
+## 维护保养
+- 每次清扫后清空尘盒
+- 每周清洁传感器和充电触点
+- 每月清洗滤网
+- 每3个月更换边刷
+- 每6个月检查主刷磨损
+
+## 支持功能
+- 支持多层地图（最多3张）
+- 支持虚拟墙和禁区
+- 支持断点续扫
+- 支持悬崖传感器
+""",
+}
+
+
+# ═══════════════════════════════════════════
+# 主流程
+# ═══════════════════════════════════════════
+
+
+def init_vector_store(docs_dir: str = None, drop_existing: bool = False):
+    """初始化向量库 — 完整流程
+
+    Args:
+        docs_dir: 知识文档目录路径，默认 data/knowledge/
+        drop_existing: 是否删除已有集合重建
+    """
+    collection_name = settings.milvus_collection
+
+    # 1. 创建 MilvusClient（新 API，无弃用警告）
+    print(f"[InitVector] 连接 Milvus: {settings.milvus_host}:{settings.milvus_port}")
+    client = MilvusClient(host=settings.milvus_host, port=settings.milvus_port)
+
+    # 2. 删旧建新
+    if drop_existing and client.has_collection(collection_name):
+        client.drop_collection(collection_name)
+        print(f"[InitVector] 已删除旧集合: {collection_name}")
+
+    # 3. 获取 embedding 模型
+    embedding = get_embedding()
+
+    # 4. 创建或获取集合
+    ensure_collection(client, collection_name, dim=embedding.dimension)
+
+    # 5. 读取文档
+    docs_dir = docs_dir or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "data", "knowledge"
+    )
+    documents = read_documents(docs_dir)
+
+    # 6. 默认知识
+    if not documents:
+        print("[InitVector] 知识目录为空，使用内置默认知识")
+        splitter = SmartDocumentSplitter(chunk_size=500, chunk_overlap=50, embedding_model=embedding)
+        documents = []
+        for category, content in DEFAULT_KNOWLEDGE.items():
+            doc_type = splitter.detect_type(f"builtin/{category}.md", content)
+            chunks = splitter.split(
+                content,
+                doc_type,
+                {
+                    "source": f"builtin/{category}.md",
+                    "title": category,
+                    "category": category,
+                },
+            )
+            documents.extend(chunks)
+
+    # 7. 插入 Milvus
+    if documents:
+        insert_to_milvus(client, collection_name, documents, embedding)
+    else:
+        print("[InitVector] 没有文档可插入")
+
+    # 8. 状态
+    stats = client.get_collection_stats(collection_name)
+    print(f"[InitVector] 集合当前条目数: {stats.get('row_count', 0)}")
+    print("[InitVector] 全部完成")
+
+
+if __name__ == "__main__":
+    init_vector_store()
