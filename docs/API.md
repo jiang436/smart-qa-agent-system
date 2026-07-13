@@ -10,6 +10,10 @@ Base URL: `http://localhost:8000/api/v1`
 | POST | `/chat/stream` | SSE 流式对话 |
 | GET | `/session/{id}/history` | 会话历史 |
 | POST | `/approve` | HITL 确认 |
+| GET | `/knowledge/bm25/status` | BM25 索引状态 |
+| POST | `/knowledge/bm25/rebuild` | 重建 BM25 索引 |
+| POST | `/knowledge/upload` | 上传知识文档（PDF/MD/TXT） |
+| POST | `/knowledge/reload` | 重新加载知识库 |
 | GET | `/health` | 健康检查 |
 | GET | `/metrics` | Prometheus 指标 |
 | GET | `/docs` | Swagger UI |
@@ -30,9 +34,9 @@ Base URL: `http://localhost:8000/api/v1`
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| user_id | string | 是 | 用户 ID |
-| message | string | 是 | 用户消息 |
-| session_id | string | 否 | 会话 ID，空则自动创建 |
+| user_id | string | 是 | 1-64 字符 |
+| message | string | 是 | 1-2000 字符 |
+| session_id | string | 否 | 空则自动创建 |
 
 ### 响应
 
@@ -44,19 +48,20 @@ Base URL: `http://localhost:8000/api/v1`
 }
 ```
 
-### 错误
+### 错误码
 
 | 状态码 | 说明 |
 |--------|------|
 | 429 | 请求过于频繁 |
 | 400 | 内容被安全策略拦截 |
+| 422 | 请求体校验不通过（Pydantic） |
 | 500 | Agent 执行异常 |
 
 ---
 
 ## POST /chat/stream
 
-### SSE 事件
+请求体同 `/chat`。返回 SSE 事件流：
 
 ```
 event: status
@@ -64,7 +69,6 @@ data: {"stage":"意图识别","message":"正在理解您的问题..."}
 
 event: token
 data: {"text":"定"}
-
 event: token
 data: {"text":"时"}
 
@@ -73,25 +77,6 @@ data: {"message":"回答基于知识库内容生成"}
 
 event: done
 data: {"message":"回答完成","intent":"qa"}
-```
-
-### 前端示例
-
-```javascript
-const response = await fetch('/api/v1/chat/stream', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ user_id: 'U1001', message: '你好' }),
-})
-
-const reader = response.body.getReader()
-const decoder = new TextDecoder()
-
-while (true) {
-  const { done, value } = await reader.read()
-  if (done) break
-  // 解析 SSE 事件...
-}
 ```
 
 ---
@@ -117,9 +102,18 @@ while (true) {
 
 ### 请求
 
+```json
+{
+  "session_id": "xxx",
+  "decision": "approve",
+  "feedback": ""
+}
 ```
-POST /api/v1/approve?session_id=xxx&decision=approve&feedback=
-```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| decision | string | `approve` / `reject` / `modify` |
+| feedback | string | modify 时填写修改意见，最长 500 字符 |
 
 ### 响应
 
@@ -127,7 +121,44 @@ POST /api/v1/approve?session_id=xxx&decision=approve&feedback=
 {
   "status": "ok",
   "decision": "approve",
-  "feedback": "",
-  "context": {}
+  "message": ""
 }
 ```
+
+---
+
+## POST /knowledge/upload
+
+上传知识文档（multipart/form-data）。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| file | File | PDF / Markdown / TXT，上限 10MB |
+
+### 响应
+
+```json
+{
+  "status": "ok",
+  "file": "产品手册.pdf",
+  "chunks": 12,
+  "dimension": 512
+}
+```
+
+## GET /knowledge/bm25/status
+
+### 响应
+
+```json
+{
+  "status": "ok",
+  "doc_count": 921,
+  "built_at": "2026-07-13T10:00:00",
+  "terms": 4523
+}
+```
+
+## POST /knowledge/bm25/rebuild
+
+重建 BM25 索引。返回同上。
