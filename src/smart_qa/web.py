@@ -100,6 +100,22 @@ async def lifespan(app: FastAPI):
         logger.warning("BM25 知识库加载失败: {}", e)
 
     setup_metrics(app)
+    # 初始化 LangGraph Store（PostgreSQL 长期记忆）
+    try:
+        from langgraph.store.postgres import PostgresStore
+
+        from smart_qa.agent.graph import set_store
+
+        pg_dsn = settings.postgres_dsn.replace("+asyncpg", "")
+        store = PostgresStore.from_conn_string(pg_dsn).__enter__()
+        await store.setup()
+        set_store(store)
+        logger.info("LangGraph Store 已就绪 (PostgresStore)")
+    except Exception as e:
+        logger.warning("LangGraph Store 不可用: {}，使用 InMemoryStore", str(e)[:80])
+        from langgraph.store.memory import InMemoryStore
+
+        set_store(InMemoryStore())
     yield
     try:
         await close_redis()

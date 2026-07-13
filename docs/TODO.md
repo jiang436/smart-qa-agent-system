@@ -26,26 +26,7 @@
 
 ### 3. 无（已在多轮对话支持中实现 — PG 持久化）
 
-### 4. LangGraph Store（长期记忆基础设施）
-
-**设计文档位置：** 3.3 记忆系统设计  
-**对应代码：** `src/smart_qa/agent/graph.py`  
-**方案：** `PostgresStore` 替代手写 `memory/*.py`
-
-```python
-uv add langgraph-checkpoint-postgres
-
-# graph.py
-from langgraph.store.postgres import PostgresStore
-store = PostgresStore(connection_string=settings.postgres_dsn)
-graph = builder.compile(checkpointer=memory, store=store)
-```
-
-**当前 `memory/` 目录下 4 个文件 (`cache.py`, `short_term.py`, `long_term.py`, `task_memory.py`) 全为死代码，未被任何模块 import，可直接清理。**
-
----
-
-## P1 — 功能缺失
+### 4. 无（已在 LangGraph Store 中实现）
 
 ### 5. `/chat/stream` 端点安全缺失
 
@@ -145,7 +126,7 @@ async def chat_stream(
 | 语义缓存（Redis） | ✅ 3.4 | ✅ | **完成（Hash + TTL + 写穿）** |
 | 记忆层持久化 | ✅ 3.3 | ✅ | **完成（模式匹配 + UPSERT）** |
 | 多轮对话 | ✅ 2.3 | ✅ | **完成（MemorySaver + Redis 双重备份）** |
-| LangGraph Store | 🟡 | ❌ | **待实现** |
+| LangGraph Store | ✅ 3.3 | ✅ | **完成（PostgresStore + 自动注入）** |
 | Stream 安全 | ✅ 3.5.2 | ❌ | **待修复** |
 | Reranker 接入 | 🟡 8章 P0 | 🟡 代码已有 | **待接入** |
 | Eval 自动化 | 🟡 8章 P0 | 🟡 代码已有 | **待接入** |

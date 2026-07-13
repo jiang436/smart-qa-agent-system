@@ -46,6 +46,8 @@ dependencies = [
     "pydantic-ai>=2.9.0",
     # Document parsing
     "pymupdf>=1.27.2",
+    "langgraph-checkpoint-postgres>=3.1.0",
+    "psycopg-binary>=3.3.4",
 ]
 
 [project.scripts]
@@ -54,6 +56,10 @@ smart-qa = "smart_qa.web:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["smart_qa*"]
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
 
 [project.optional-dependencies]
 dev = [
@@ -67,10 +73,6 @@ tracing = [
     "opentelemetry-exporter-otlp>=1.39.0,<1.43.0",
     "tiktoken>=0.13.0",
 ]
-
-[[tool.uv.index]]
-url = "https://pypi.tuna.tsinghua.edu.cn/simple"
-default = true
 
 [dependency-groups]
 dev = [
