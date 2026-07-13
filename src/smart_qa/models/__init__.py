@@ -5,7 +5,7 @@ from .consumable import ConsumableOrder
 from .device import UserDevice
 from .knowledge_file import KnowledgeFile
 from .session import Session
-from .user_profile import UserProfile
 from .usage import DeviceUsageLog
+from .user_profile import UserProfile
 
 __all__ = ["Base", "Session", "UserDevice", "ConsumableOrder", "DeviceUsageLog", "KnowledgeFile", "UserProfile"]

@@ -24,25 +24,7 @@
 
 ---
 
-### 3. 多轮对话支持
-
-**设计文档位置：** 2.3 故障排查场景（多轮对话状态管理）  
-**对应代码：** `src/smart_qa/api/routes/chat.py`  
-**现状：** `RedisClient.get_messages()` / `update_session()` 已实现，但 `chat.py` 没调用
-
-```python
-# chat.py — invoke 前加载历史
-history = await RedisClient.get_messages(state["session_id"])
-if history:
-    state["messages"] = history + state["messages"]
-
-# chat.py — invoke 后保存
-await RedisClient.update_session(state["session_id"], {
-    "messages": result.get("messages", state["messages"]),
-})
-```
-
----
+### 3. 无（已在多轮对话支持中实现 — PG 持久化）
 
 ### 4. LangGraph Store（长期记忆基础设施）
 
@@ -162,7 +144,7 @@ async def chat_stream(
 | MilvusClient 迁移 | ✅ | ✅ | 完成 |
 | 语义缓存（Redis） | ✅ 3.4 | ✅ | **完成（Hash + TTL + 写穿）** |
 | 记忆层持久化 | ✅ 3.3 | ✅ | **完成（模式匹配 + UPSERT）** |
-| 多轮对话 | ✅ 2.3 | ❌ | **待实现** |
+| 多轮对话 | ✅ 2.3 | ✅ | **完成（MemorySaver + Redis 双重备份）** |
 | LangGraph Store | 🟡 | ❌ | **待实现** |
 | Stream 安全 | ✅ 3.5.2 | ❌ | **待修复** |
 | Reranker 接入 | 🟡 8章 P0 | 🟡 代码已有 | **待接入** |

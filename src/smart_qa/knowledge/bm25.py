@@ -118,7 +118,6 @@ class BM25Index:
 
     def add_documents(self, new_docs: list[str]):
         """增量添加文档（上传文件后调用）"""
-        start_count = self.doc_count
         total_len_so_far = self.avg_doc_len * self.doc_count
 
         for doc_id_offset, doc in enumerate(new_docs):

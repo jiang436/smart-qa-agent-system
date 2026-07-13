@@ -5,7 +5,7 @@ import json
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from smart_qa.database.redis import RedisClient
+from smart_qa.memory.conversation_store import save_messages
 
 
 class SSEStreamHandler:
@@ -67,31 +67,20 @@ class SSEStreamHandler:
 
     @staticmethod
     async def _persist(state: dict):
-        """持久化对话上下文到 Redis"""
+        """持久化对话上下文到 PostgreSQL"""
         sid = state.get("session_id")
+        uid = state.get("user_id", "anonymous")
         if not sid:
             return
         try:
-            # messages（最近 20 条）
-            history = state.get("messages", [])
-            answer = state.get("final_answer", "") or ""
-            all_msgs = history + [{"role": "assistant", "content": answer}]
-            await RedisClient.set_json(f"history:{sid}", all_msgs[-20:], ttl=86400)
-
-            # user_profile
-            profile = state.get("user_profile")
-            if profile:
-                await RedisClient.set_json(f"profile:{sid}", profile, ttl=86400)
-
-            # short_term
-            short = state.get("short_term")
-            if short:
-                await RedisClient.set_json(f"short:{sid}", short, ttl=86400)
-
-            # task_memory（故障排查进度）
-            task = state.get("task_memory")
-            if task:
-                await RedisClient.set_json(f"diag:{sid}", task, ttl=86400)
+            messages = state.get("messages", [])
+            if isinstance(messages, list) and len(messages) > 1:
+                await save_messages(
+                    session_id=sid,
+                    user_id=uid,
+                    messages=messages,
+                    intent=state.get("intent"),
+                )
         except Exception:
             pass
 
