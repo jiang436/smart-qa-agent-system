@@ -116,6 +116,15 @@ async def lifespan(app: FastAPI):
         from langgraph.store.memory import InMemoryStore
 
         set_store(InMemoryStore())
+
+    # 初始化 Logfire 可观测
+    try:
+        from smart_qa.database.engine import _engine
+        from smart_qa.observability.logfire_setup import setup_logfire
+
+        await setup_logfire(app=app, engine=_engine)
+    except Exception as e:
+        logger.debug("Logfire 接入异常: {}", e)
     yield
     try:
         await close_redis()
