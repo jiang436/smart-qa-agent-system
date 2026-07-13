@@ -51,9 +51,12 @@ class QAScenario:
 
     @classmethod
     def _get_cache(cls) -> SemanticCache:
-        """懒加载语义缓存"""
+        """懒加载语义缓存（带 Redis 支持）"""
         if cls._semantic_cache is None:
-            cls._semantic_cache = SemanticCache()
+            from smart_qa.database.redis import RedisClient
+
+            redis_client = RedisClient.get_client()
+            cls._semantic_cache = SemanticCache(redis_client=redis_client)
         return cls._semantic_cache
 
     @classmethod
@@ -85,7 +88,7 @@ class QAScenario:
         state.get("user_id", "anonymous")
 
         cache = QAScenario._get_cache()
-        cached_answer = cache.get(query)
+        cached_answer = await cache.get(query)
         if cached_answer:
             state["final_answer"] = cached_answer
             state["retrieved_docs"] = []
@@ -116,7 +119,7 @@ class QAScenario:
             )
 
         if len(final_answer) >= 10:
-            cache.set(query, final_answer)
+            await cache.set(query, final_answer)
 
         elapsed = time.time() - start_time
         if elapsed > 3.0:

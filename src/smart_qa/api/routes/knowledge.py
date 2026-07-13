@@ -237,39 +237,15 @@ async def bm25_status():
 
 @router.post("/bm25/rebuild")
 async def bm25_rebuild():
-    """重建 BM25 索引并持久化"""
-    import json as _json
-    import os as _os
-
+    """重建 BM25 索引并持久化 — 和 Milvus 使用完全相同的数据源"""
     from smart_qa.knowledge.bm25 import BM25Index
+    from smart_qa.rag.retrieval import _collect_knowledge_texts, set_shared_bm25
 
-    _docs = []
-    for _root, _dirs, _files in _os.walk("data/knowledge"):
-        for _f in _files:
-            if _f.endswith(".md"):
-                with open(_os.path.join(_root, _f), encoding="utf-8") as _fh:
-                    for _p in _fh.read().split("\n\n"):
-                        if len(_p.strip()) > 20:
-                            _docs.append(_p.strip())
-
-    for _faq_file in ["data/faq_knowledge_base.json", "data/faq_consumables.json", "data/faq_troubleshooting.json"]:
-        try:
-            with open(_faq_file, encoding="utf-8") as _fh:
-                _faq_data = _json.load(_fh)
-            _entries = _faq_data if isinstance(_faq_data, list) else _faq_data.get("entries", [])
-            for _entry in _entries:
-                _q = _entry.get("question", "")
-                _a = _entry.get("answer", "")
-                if _q and _a and len(_q + _a) > 30:
-                    _docs.append(f"问：{_q}\n答：{_a}")
-        except Exception:
-            pass
+    docs = _collect_knowledge_texts()
 
     bm25 = BM25Index()
-    bm25.build(_docs)
+    bm25.build(docs)
     bm25.save()
-
-    from smart_qa.rag.retrieval import set_shared_bm25
 
     set_shared_bm25(bm25)
 

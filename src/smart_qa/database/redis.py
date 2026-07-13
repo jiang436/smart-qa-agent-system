@@ -30,6 +30,11 @@ class RedisClient:
             raise RuntimeError("Redis 未初始化")
 
     @classmethod
+    def get_client(cls):
+        """获取底层 Redis 连接实例（供语义缓存等组件使用）"""
+        return cls._client
+
+    @classmethod
     async def get(cls, key: str) -> str | None:
         cls._ensure()
         return await cls._client.get(key)

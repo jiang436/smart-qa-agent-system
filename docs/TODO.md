@@ -7,22 +7,12 @@
 
 ## P0 — 核心缺失（影响面试印象）
 
-### 1. 语义缓存层
+### 1. 语义缓存（Redis 后端）
 
 **设计文档位置：** 3.4 缓存策略 · 3.5.4 召回兜底机制  
-**对应代码：** `src/smart_qa/memory/cache.py` 文件存在但未被任何代码 import  
-**原因：** 每个请求都走完整 Agent 链路，相同问题重复消耗 Token
-
-```python
-# 需在 Scenario.run() 第一行接入
-from smart_qa.memory.cache import SemanticCache
-cache = SemanticCache()
-result = await cache.get(query)
-if result:
-    return result  # 直接返回，不走 LLM
-```
-
-**面试加分点：** 高频问题 < 2ms 返回，省 Token 成本。
+**代码状态：** `SemanticCache` 类 ✅ 已实现，已接入 `QAScenario` / `RAGAgent` / `ChatService`  
+**当前限制：** ✅ 本地 dict 可用 | ✅ Redis Hash 后端已实现（SCAN + 余弦相似度） | ✅ 自动检测 `RedisClient._client` | ✅ TTL 支持  
+**下一步：** 大规模场景 > 10 万条可升级 Redis Stack `FT.SEARCH`（当前 SCAN 遍历对缓存规模够用）
 
 ---
 
@@ -190,7 +180,7 @@ async def chat_stream(
 | BM25 持久化 | ✅ | ✅ | 完成 |
 | 知识库管理 API | ✅ | ✅ | 完成 |
 | MilvusClient 迁移 | ✅ | ✅ | 完成 |
-| 语义缓存 | ✅ 3.4 | ❌ | **待实现** |
+| 语义缓存（Redis） | ✅ 3.4 | ✅ | **完成（Hash + TTL + 写穿）** |
 | 记忆层持久化 | ✅ 3.3 | ❌ | **待实现** |
 | 多轮对话 | ✅ 2.3 | ❌ | **待实现** |
 | LangGraph Store | 🟡 | ❌ | **待实现** |

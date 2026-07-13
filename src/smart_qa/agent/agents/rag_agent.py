@@ -126,7 +126,7 @@ class RAGAgent:
         final_answer = refined.get("final_answer", final_answer)
 
         logger.info("写入缓存 query={}", query[:60])
-        self.cache.set(query, final_answer)
+        await self.cache.set(query, final_answer)
 
         user_msg = Message(role="user", content=query)
         assistant_msg = Message(role="assistant", content=final_answer)
@@ -316,7 +316,7 @@ class RAGAgent:
                 "confidence": float,
             }
         """
-        cached = self.cache.get(query)
+        cached = await self.cache.get(query)
         if cached:
             return {
                 "answer": cached,
@@ -339,7 +339,7 @@ class RAGAgent:
 
         refined = await self.reflection.refine_answer(query, answer, {"docs": docs} if docs else None)
 
-        self.cache.set(query, refined["final_answer"])
+        await self.cache.set(query, refined["final_answer"])
 
         return {
             "answer": refined["final_answer"],

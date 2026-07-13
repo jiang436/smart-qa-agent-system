@@ -80,29 +80,97 @@ def set_shared_bm25(bm25):
     _shared_bm25 = bm25
 
 
-def _load_knowledge_bm25():
-    """懒加载: 首次调用时从 data/knowledge/ 构建 BM25 + 预计算 BGE 向量"""
-    import os as _os
+def _collect_knowledge_texts() -> list[str]:
+    """收集所有可索引知识文本 — 和 Milvus 使用完全相同的数据源
 
+    来源:
+      1. data/knowledge/ 下的 md/txt/pdf（DocumentParser + SmartDocumentSplitter）
+      2. FAQ JSON 文件
+      3. 内置默认知识（目录为空时兜底）
+    """
+    import json
+    import os
+
+    from smart_qa.knowledge.document_parser import DocumentParser
+    from smart_qa.rag.chunking import SmartDocumentSplitter
+
+    parser = DocumentParser()
+    splitter = SmartDocumentSplitter(chunk_size=500, chunk_overlap=50)
+    texts: list[str] = []
+
+    # ── 1. data/knowledge/ 目录 ──
+    if os.path.isdir("data/knowledge"):
+        for root, _dirs, files in os.walk("data/knowledge"):
+            for f in sorted(files):
+                filepath = os.path.join(root, f)
+                if not DocumentParser.is_supported(filepath):
+                    continue
+                try:
+                    content = parser.extract_text(filepath)
+                except Exception:
+                    continue
+                if not content.strip():
+                    continue
+                doc_type = SmartDocumentSplitter.detect_type(f, content)
+                chunks = splitter.split(content, doc_type, {"source": f})
+                for c in chunks:
+                    txt = c.get("content", "").strip()
+                    if len(txt) > 20:
+                        texts.append(txt)
+
+    # ── 2. FAQ JSON ──
+    for faq_file in [
+        "data/faq_knowledge_base.json",
+        "data/faq_consumables.json",
+        "data/faq_troubleshooting.json",
+    ]:
+        try:
+            with open(faq_file, encoding="utf-8") as fh:
+                faq_data = json.load(fh)
+        except Exception:
+            continue
+        entries = faq_data if isinstance(faq_data, list) else faq_data.get("entries", [])
+        for entry in entries:
+            q = entry.get("question", "")
+            a = entry.get("answer", "")
+            if q and a and len(q + a) > 30:
+                texts.append(f"问：{q}\n答：{a}")
+
+    # ── 3. 默认知识（目录为空时兜底） ──
+    if not texts:
+        try:
+            from smart_qa.scripts.init_vector_store import DEFAULT_KNOWLEDGE
+
+            for category, content in DEFAULT_KNOWLEDGE.items():
+                doc_type = SmartDocumentSplitter.detect_type(f"builtin/{category}.md", content)
+                chunks = splitter.split(content, doc_type, {"source": f"builtin/{category}.md"})
+                for c in chunks:
+                    texts.append(c.get("content", ""))
+        except ImportError:
+            pass
+
+    return texts
+
+
+def _load_knowledge_bm25():
+    """懒加载: 首次调用时构建 BM25 + 预计算 BGE 向量
+
+    和 Milvus 使用完全相同的文档源 + 分块策略，
+    确保两个索引的知识覆盖一致。
+    """
     global _shared_bm25, _doc_vectors
     if _shared_bm25 is not None:
         return _shared_bm25
+
     bm = BM25Index()
-    docs = []
-    for _root, _dirs, _files in _os.walk("data/knowledge"):
-        for _f in _files:
-            if _f.endswith(".md"):
-                with open(_os.path.join(_root, _f), encoding="utf-8") as _fh:
-                    for _p in _fh.read().split("\n\n"):
-                        if len(_p.strip()) > 20:
-                            docs.append(_p.strip())
+    docs = _collect_knowledge_texts()
     if docs:
         bm.build(docs)
         _shared_bm25 = bm
-        # 预计算所有文档的 BGE 向量
+        # 预计算所有文档的 BGE 向量（用于 L3 BM25 召回后的语义重排）
         emb = get_embedding()
         _doc_vectors = emb.encode(docs)
-        logger.info("知识库加载完成 docs={} vectors_shape={}", len(docs), _doc_vectors.shape)
+        logger.info("知识库 BM25 加载完成 docs={} vectors_shape={}", len(docs), _doc_vectors.shape)
     return _shared_bm25
 
 

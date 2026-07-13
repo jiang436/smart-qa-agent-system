@@ -42,7 +42,7 @@ class ChatService:
         session_id = request.session_id or str(uuid.uuid4())[:12]
 
         # 1. 缓存查找
-        cached = self.cache.get(query)
+        cached = await self.cache.get(query)
         if cached:
             return ChatResponse(answer=cached, session_id=session_id, intent="qa")
 
@@ -61,7 +61,7 @@ class ChatService:
             logger.warning("慢查询 latency={:.1f}s query={}", elapsed, query[:80])
 
         # 3. 写入缓存
-        self.cache.set(query, result.get("answer", ""))
+        await self.cache.set(query, result.get("answer", ""))
 
         return ChatResponse(
             answer=result.get("answer", "抱歉，未能找到相关信息。"),
