@@ -19,20 +19,8 @@
 ### 2. 记忆层持久化写入（LTM）
 
 **设计文档位置：** 3.3 记忆系统设计  
-**对应代码：** `src/smart_qa/agent/graph.py` 中 `guard_check → END` 之间没有 memory 节点  
-**原因：** MemorySaver 只做 State 快照（崩溃恢复），不做用户画像/偏好持久化
-
-```python
-# 在 graph.py 中新增节点
-workflow.add_node("memory_writer", memory_writer_node)
-workflow.add_edge("guard_check", "memory_writer")
-workflow.add_edge("memory_writer", END)
-```
-
-**memory_writer_node 职责：**
-- 从对话中提取"确信不会变的事实"（设备型号、户型、偏好）
-- 写入 PostgreSQL `user_profiles` 表
-- 不是所有对话都写入，只写入 LTM 层级的信息
+**代码状态：** ✅ `memory_writer_node` 已实现，`graph.py` 已接入 | ✅ `UserProfile` 表已创建 | ✅ 模式匹配提取（设备/偏好/户型） | ✅ UPSERT 到 PostgreSQL | ✅ 静默失败不阻塞主流程  
+**当前限制：** 仅支持中文关键词匹配，英文用户需扩展 `_MODE_KEYWORDS` | 无 LLM 提取（成本原因，纯模式匹配）
 
 ---
 
@@ -92,15 +80,7 @@ async def chat_stream(
 
 **修复：** 添加 `_sec` 依赖。
 
-### 6. Router `"done"` 路径跳过 guard
-
-**对应代码：** `src/smart_qa/agent/graph.py`
-
-```python
-"done": END,  # → 应改为 "done": "guard_check"
-```
-
-走 `done` 的请求直接跳到 END，跳过了 `guard_check` 和 output sanitization。
+### 6. 无（已在记忆层持久化中修复）
 
 ### 7. Stream 端点缺少输出过滤
 
@@ -181,7 +161,7 @@ async def chat_stream(
 | 知识库管理 API | ✅ | ✅ | 完成 |
 | MilvusClient 迁移 | ✅ | ✅ | 完成 |
 | 语义缓存（Redis） | ✅ 3.4 | ✅ | **完成（Hash + TTL + 写穿）** |
-| 记忆层持久化 | ✅ 3.3 | ❌ | **待实现** |
+| 记忆层持久化 | ✅ 3.3 | ✅ | **完成（模式匹配 + UPSERT）** |
 | 多轮对话 | ✅ 2.3 | ❌ | **待实现** |
 | LangGraph Store | 🟡 | ❌ | **待实现** |
 | Stream 安全 | ✅ 3.5.2 | ❌ | **待修复** |

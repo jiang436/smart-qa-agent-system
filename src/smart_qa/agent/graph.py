@@ -1,4 +1,4 @@
-"""LangGraph StateGraph 主图 — 编排所有 Agent + MemorySaver 记忆"""
+"""LangGraph StateGraph 主图 — 编排所有 Agent + MemorySaver 记忆 + LTM 持久化"""
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
@@ -6,6 +6,7 @@ from langgraph.graph import END, StateGraph
 from smart_qa.agent.agents.router_agent import RouterAgent
 from smart_qa.agent.guards.loop_detector import LoopDetector
 from smart_qa.agent.state import AgentState
+from smart_qa.memory.memory_writer import memory_writer_node
 from smart_qa.observability.logger import logger
 from smart_qa.scenarios.consumables_scenario import ConsumablesScenario
 from smart_qa.scenarios.qa_scenario import QAScenario
@@ -106,7 +107,7 @@ async def handle_general(state: dict) -> dict:
 
 
 def build_graph(llm_client=None) -> StateGraph:
-    """构建 Agent 编排图（带 MemorySaver 持久化记忆）"""
+    """构建 Agent 编排图（带 MemorySaver + LTM 持久化）"""
     logger.info("构建 LangGraph 编排图")
 
     router_agent = RouterAgent(llm_client=llm_client)
@@ -119,9 +120,11 @@ def build_graph(llm_client=None) -> StateGraph:
     workflow.add_node("consumables", ConsumablesScenario.run)
     workflow.add_node("general_handler", handle_general)
     workflow.add_node("guard_check", loop_detector.check)
+    workflow.add_node("memory_writer", memory_writer_node)
 
     workflow.set_entry_point("router")
 
+    # ── Router 分发 ──
     workflow.add_conditional_edges(
         "router",
         RouterAgent.dispatch,
@@ -130,24 +133,28 @@ def build_graph(llm_client=None) -> StateGraph:
             "troubleshoot": "troubleshoot",
             "consumables": "consumables",
             "general": "general_handler",
-            "done": END,  # FAQ 高置信命中 → 直接返回，跳过 RAG
+            "done": "guard_check",  # FAQ 命中也要走安全检查 + 记忆写入
         },
     )
 
+    # ── 场景 → 安全检查 ──
     workflow.add_edge("qa", "guard_check")
     workflow.add_edge("troubleshoot", "guard_check")
     workflow.add_edge("consumables", "guard_check")
     workflow.add_edge("general_handler", "guard_check")
 
+    # ── 安全检查 → 记忆写入 → 结束 ──
     workflow.add_conditional_edges(
         "guard_check",
         LoopDetector.decide,
         {
             "continue": "router",
-            "stop": END,
-            "done": END,
+            "stop": "memory_writer",   # 强制终止也先写记忆
+            "done": "memory_writer",   # 正常结束 → 写记忆
         },
     )
+
+    workflow.add_edge("memory_writer", END)
 
     return workflow.compile(checkpointer=_memory)
 
