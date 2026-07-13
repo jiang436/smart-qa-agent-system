@@ -14,9 +14,12 @@
       result = retriever.retrieve(query)
 """
 
+import os
 import time
 from contextlib import contextmanager
 from typing import Any
+
+from smart_qa.observability.logger import logger
 
 try:
     from opentelemetry import trace
@@ -45,11 +48,14 @@ class Tracer:
         """
         Args:
             service_name: 服务名称（显示在追踪系统中）
-            otlp_endpoint: OTLP 收集器地址，为 None 时仅输出到控制台
+            otlp_endpoint: OTLP 收集器地址，为 None 时读环境变量 OTEL_EXPORTER_OTLP_ENDPOINT
         """
         self.service_name = service_name
         self._initialized = False
         self._tracer = None
+
+        if otlp_endpoint is None:
+            otlp_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
 
         if HAS_OTEL:
             self._setup(otlp_endpoint)
@@ -201,3 +207,48 @@ def get_tracer() -> Tracer:
     if _tracer is None:
         _tracer = Tracer()
     return _tracer
+
+
+def setup_otel(app=None):
+    """配置 OpenTelemetry 全栈自动追踪（SigNoz / Grafana）
+
+    用法 (web.py):
+        from smart_qa.observability.tracer import setup_otel
+        setup_otel(app=app)
+    """
+    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+    if not endpoint:
+        return  # 未配置 OTLP 端点，跳过
+
+    service_name = os.environ.get("OTEL_SERVICE_NAME", "smart-qa-agent")
+
+    # 初始化 TracerProvider + OTLP exporter
+    _ = Tracer(service_name=service_name, otlp_endpoint=endpoint)
+
+    # 自动 instrument（需要安装 opentelemetry-instrumentation-* 包）
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+        if app is not None:
+            FastAPIInstrumentor.instrument_app(app)
+            logger.info("OTel instrument: FastAPI")
+    except Exception as e:
+        logger.debug("OTel FastAPI instrument 失败: {}", e)
+
+    try:
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+        HTTPXClientInstrumentor().instrument()
+        logger.info("OTel instrument: httpx")
+    except Exception as e:
+        logger.debug("OTel httpx instrument 失败: {}", e)
+
+    try:
+        from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+
+        SQLAlchemyInstrumentor().instrument()
+        logger.info("OTel instrument: SQLAlchemy")
+    except Exception as e:
+        logger.debug("OTel SQLAlchemy instrument 失败: {}", e)
+
+    logger.info("OpenTelemetry 可观测已就绪 endpoint={}", endpoint)

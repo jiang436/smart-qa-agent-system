@@ -1,6 +1,8 @@
 services:
+  # ── 基础设施 ──
+
   postgres:
-    image: postgres:16
+    image: postgres:17
     environment:
       POSTGRES_DB: agent
       POSTGRES_USER: user
@@ -9,15 +11,25 @@ services:
       - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d agent"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
 
   redis:
     image: redis:7
-    command: redis-server --save 60 1 --loglevel warning --requirepass ""
+    command: redis-server --save 60 1 --loglevel warning
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
 
   etcd:
@@ -26,6 +38,11 @@ services:
       ETCD_AUTO_COMPACTION_MODE: revision
       ETCD_AUTO_COMPACTION_RETENTION: "1000"
       ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
   minio:
@@ -37,19 +54,66 @@ services:
     ports:
       - "9000:9000"
       - "9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
   milvus:
-    image: milvusdb/milvus:v2.4.0
+    image: milvusdb/milvus:v2.5.6
     ports:
       - "19530:19530"
     environment:
       ETCD_ENDPOINTS: etcd:2379
       MINIO_ADDRESS: minio:9000
     depends_on:
-      - etcd
-      - minio
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     restart: unless-stopped
+
+  # ── 可观测: SigNoz (开源 Logfire 替代) ──
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.1
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  signoz:
+    image: signoz/query-service:latest
+    ports:
+      - "3301:3301"  # SigNoz UI
+    environment:
+      SIGNOZ_OTEL_COLLECTOR_ENDPOINT: "http://localhost:4318"
+      STORAGE: clickhouse
+      CLICKHOUSE_URL: tcp://clickhouse:9000
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3301/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # ── 应用 ──
 
   web:
     build:
@@ -60,11 +124,15 @@ services:
     env_file:
       - ../.env
     depends_on:
-      - postgres
-      - redis
-      - milvus
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   pg_data:
   redis_data:
+  clickhouse_data:

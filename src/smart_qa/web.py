@@ -117,14 +117,13 @@ async def lifespan(app: FastAPI):
 
         set_store(InMemoryStore())
 
-    # 初始化 Logfire 可观测
+    # OTel 可观测（有 OTEL_EXPORTER_OTLP_ENDPOINT 时生效）
     try:
-        from smart_qa.database.engine import _engine
-        from smart_qa.observability.logfire_setup import setup_logfire
+        from smart_qa.observability.tracer import setup_otel
 
-        await setup_logfire(app=app, engine=_engine)
+        setup_otel(app=app)
     except Exception as e:
-        logger.debug("Logfire 接入异常: {}", e)
+        logger.debug("OTel 接入异常: {}", e)
     yield
     try:
         await close_redis()
