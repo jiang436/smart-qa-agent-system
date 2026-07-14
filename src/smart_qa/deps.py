@@ -29,6 +29,7 @@ Usage:
 from functools import lru_cache
 
 from smart_qa.config import settings
+from smart_qa.observability.logger import logger
 from smart_qa.security import RateLimiter, SensitiveFilter
 
 
@@ -47,6 +48,7 @@ def get_llm_client():
     """
     from langchain_openai import ChatOpenAI
 
+    logger.info("正在加载 LLM 模型: {} (base_url={})", settings.lightweight_model, settings.llm_base_url)
     return ChatOpenAI(
         api_key=settings.llm_api_key,
         base_url=settings.llm_base_url,

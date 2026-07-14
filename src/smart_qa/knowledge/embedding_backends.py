@@ -29,8 +29,9 @@ class LocalEmbedding(EmbeddingBackend):
         from sentence_transformers import SentenceTransformer
 
         device = "mps" if torch.backends.mps.is_available() else "cpu"
+        logger.info("正在加载 Embedding 模型: {} (backend=local, device={})", model_name, device)
         self._model = SentenceTransformer(model_name, device=device)
-        logger.info("Embedding 本地模型已加载: {} (device={})", model_name, device)
+        logger.info("Embedding 模型已加载: {} (device={})", model_name, device)
 
     def encode(self, texts: list[str]) -> np.ndarray:
         return self._model.encode(texts, normalize_embeddings=True)  # type: ignore[return-value]

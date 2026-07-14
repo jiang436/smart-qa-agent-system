@@ -34,18 +34,20 @@ class Reranker:
         instance._cross_encoder_available = True
 
         # 先尝试本地缓存（避免不可达镜像站导致 30s+ 超时）
+        logger.info("正在加载 Reranker 模型: {} (尝试本地缓存)", model_name)
         try:
             from sentence_transformers import CrossEncoder
 
             instance._model = CrossEncoder(model_name, local_files_only=True)
             logger.info("Reranker 已加载 model={} (from cache)", model_name)
         except Exception:
+            logger.info("Reranker 本地缓存未命中，尝试在线下载: {}", model_name)
             # 缓存不存在 → 尝试在线下载
             try:
                 from sentence_transformers import CrossEncoder
 
                 instance._model = CrossEncoder(model_name)
-                logger.info("Reranker 已加载 model={} (downloaded)", model_name)
+                logger.info("Reranker 在线下载成功: {}", model_name)
             except Exception as e:
                 logger.warning("Reranker Cross-Encoder 不可用, 降级启发式: {}", e)
                 instance._cross_encoder_available = False
@@ -73,7 +75,8 @@ class Reranker:
 
         logger.info(
             "Reranker top{} from {} docs top_score={:.3f}",
-            top_k, len(docs),
+            top_k,
+            len(docs),
             result[0]["rerank_score"] if result else 0,
         )
         return result

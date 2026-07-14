@@ -124,7 +124,13 @@ class QAScenario:
             await cache.set(query, final_answer)
 
         elapsed = time.time() - start_time
-        logger.info("QA场景完成 user={} latency={:.1f}s answer_len={} cache_hit={}", user_id, elapsed, len(state.get("final_answer", "")), bool(cached_answer))
+        logger.info(
+            "QA场景完成 user={} latency={:.1f}s answer_len={} cache_hit={}",
+            user_id,
+            elapsed,
+            len(state.get("final_answer", "")),
+            bool(cached_answer),
+        )
         if elapsed > 3.0:
             logger.warning("QA场景慢查询 latency={:.1f}s query={}", elapsed, query[:80])
 

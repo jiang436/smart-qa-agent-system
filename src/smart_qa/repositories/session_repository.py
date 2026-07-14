@@ -8,6 +8,7 @@
 测试:
     repo = InMemorySessionRepository()
 """
+
 from __future__ import annotations
 
 import json
@@ -18,8 +19,7 @@ from typing import Protocol, runtime_checkable
 class SessionRepository(Protocol):
     """会话存储接口"""
 
-    async def save(self, session_id: str, user_id: str, messages: list,
-                   intent: str | None = None) -> None:
+    async def save(self, session_id: str, user_id: str, messages: list, intent: str | None = None) -> None:
         """持久化对话消息 (UPSERT)"""
         ...
 
@@ -35,18 +35,19 @@ def _to_serializable(messages: list) -> list[dict]:
         if isinstance(m, dict):
             result.append(m)
         else:
-            result.append({
-                "role": getattr(m, "type", "") or getattr(m, "role", ""),
-                "content": getattr(m, "content", ""),
-            })
+            result.append(
+                {
+                    "role": getattr(m, "type", "") or getattr(m, "role", ""),
+                    "content": getattr(m, "content", ""),
+                }
+            )
     return result
 
 
 class PostgresSessionRepository:
     """PostgreSQL 实现"""
 
-    async def save(self, session_id: str, user_id: str, messages: list,
-                   intent: str | None = None) -> None:
+    async def save(self, session_id: str, user_id: str, messages: list, intent: str | None = None) -> None:
         if not session_id or not messages:
             return
         messages = _to_serializable(messages)
@@ -85,6 +86,7 @@ class PostgresSessionRepository:
                 await db.commit()
         except Exception as e:
             import logging
+
             logging.getLogger(__name__).warning("PG 保存对话失败 session=%s err=%s", session_id, e)
 
     async def load(self, session_id: str, limit: int = 50) -> list[dict]:
@@ -107,6 +109,7 @@ class PostgresSessionRepository:
                     return msgs[-limit:] if isinstance(msgs, list) else []
         except Exception as e:
             import logging
+
             logging.getLogger(__name__).debug("PG 加载对话失败 session=%s err=%s", session_id, e)
         return []
 
@@ -117,8 +120,7 @@ class InMemorySessionRepository:
     def __init__(self):
         self._store: dict[str, dict] = {}
 
-    async def save(self, session_id: str, user_id: str, messages: list,
-                   intent: str | None = None) -> None:
+    async def save(self, session_id: str, user_id: str, messages: list, intent: str | None = None) -> None:
         self._store[session_id] = {
             "user_id": user_id,
             "messages": _to_serializable(messages),

@@ -100,7 +100,7 @@ async def lifespan(app: FastAPI):
         logger.warning("BM25 知识库加载失败: {}", e)
 
     setup_metrics(app)
-    # 预加载 Embedding 模型（避免首次请求等待 80+s）
+    # 预加载 Embedding 模型（含 warm-up，避免首次请求等待 80+s）
     try:
         from smart_qa.knowledge.vector_store import get_embedding
 
@@ -110,7 +110,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.debug("Embedding 模型预加载跳过: {}", e)
 
-    # 预加载 Reranker Cross-Encoder 模型（避免首次 RAG 请求卡住）
+    # 预加载 Reranker 模型（避免首次 RAG 请求卡住）
     try:
         from smart_qa.rag.reranker import Reranker
 
@@ -118,6 +118,15 @@ async def lifespan(app: FastAPI):
         logger.info("Reranker 模型已预加载")
     except Exception as e:
         logger.debug("Reranker 预加载跳过: {}", e)
+
+    # 预加载 LLM 客户端（验证 API 连通性）
+    try:
+        from smart_qa.deps import get_llm_client
+
+        get_llm_client()
+        logger.info("LLM 客户端已预加载")
+    except Exception as e:
+        logger.debug("LLM 客户端预加载跳过: {}", e)
 
     # 初始化 LangGraph Store（PostgreSQL 长期记忆）
     try:
@@ -176,7 +185,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 
 app.include_router(router, prefix="/api/v1")

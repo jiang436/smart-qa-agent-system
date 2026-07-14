@@ -14,6 +14,7 @@ Usage:
     # result["source"]: "L1_semantic" | "L2_rewrite" | "L3_bm25" | "L4_llm"
     # result["confidence"]: "high" | "medium" | "low"
 """
+
 import re
 import threading
 
@@ -106,7 +107,6 @@ def set_shared_bm25(bm25):
     with _load_lock:
         global _shared_bm25
         _shared_bm25 = bm25
-
 
 
 def _collect_knowledge_texts() -> list[str]:

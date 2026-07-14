@@ -147,14 +147,35 @@ class RouterAgent:
     FAQ_HIGH_CONFIDENCE = 0.95  # 95% 相似度才使用FAQ预写答案
 
     async def route(self, state: dict) -> dict:
-        """意图分类节点 — 新流程
+        """路由节点：关键词优先筛选，LLM 语义兜底
 
-        1. 快速过滤：寒暄 / 越界 / 多问题 / 故障强匹配
-        2. LLM 意图分类：理解用户真正想问什么
-        3. 根据意图分流：
-           - qa/general → FAQ 高置信匹配(≥85%) 或 RAG+LLM
-           - troubleshoot → 故障排查决策树
-           - consumables → 耗材管理推荐
+        三层过滤 + 一层 LLM 分流：
+
+        ┌─ Layer 1: 关键词快筛（<1ms）
+        │   ├── is_pure_greeting()     → 问候/寒暄 → 直接回复，不走 LLM
+        │   ├── is_out_of_scope()      → 明显越界   → 拒绝话术，不走 LLM
+        │   ├── hard_faq               → 你是谁/能干什么 → 硬编码回复
+        │   ├── 多轮诊断上下文          → 诊断进行中 → 复用上次意图
+        │   ├── pending_purchase       → HITL 待确认 → 强制走耗材场景
+        │   └── 多问题检测              → 一次只能问一个
+        │
+        ├─ Layer 2: LLM 语义分类（~1s）
+        │   ├── qa / general        → FAQ 高置信匹配 or RAG
+        │   ├── troubleshoot        → 故障排查决策树
+        │   ├── consumables         → 耗材推荐 / HITL
+        │   ├── device_control      → 设备控制指令
+        │   └── report              → 报告生成
+        │
+        └─ Layer 3: 场景内二次兜底（LLM ~1s）
+            └── general 场景的 handle_general()
+                  ├── is_pure_greeting()     关键词再次兜底
+                  ├── is_out_of_scope()      关键词再次兜底
+                  └── LLM 生成回复            prompt: "无关内容用拒绝话术"
+
+        设计原则：
+            80% 的常见越界/问候用关键词在 <1ms 内拦截，
+            剩下 20% 的边缘情况由 LLM 语义理解处理。
+            关键词快且便宜在前，LLM 灵活但慢在后兜底。
         """
         from smart_qa.agent.persona import OUT_OF_SCOPE_REJECTION, get_greeting_reply, is_out_of_scope, is_pure_greeting
 
@@ -194,20 +215,17 @@ class RouterAgent:
         # ── 进行中的多轮诊断 → 先判断是否在回答排查问题 ──
         task = state.get("task_memory") or {}
         if task.get("diagnosis_stage") == "diagnosis":
-            # 如果用户消息是短回答（yes/no/描述状态），大概率在回答排查问题
             is_short_answer = len(query) <= 10 or any(
                 query.startswith(kw) for kw in ["是", "对", "有", "嗯", "不", "没", "亮", "能", "可以"]
             )
             if is_short_answer:
                 state["intent"] = "troubleshoot"
                 return state
-            # 长文本 → 调 LLM 精确判断是否在回答排查问题
             if self.llm:
                 is_answer = await self._is_diagnosis_answer(query, state)
                 if is_answer:
                     state["intent"] = "troubleshoot"
                     return state
-            # 不是回答 → 清空诊断，重新走完整分类流程
             state["task_memory"] = {}
             logger.info("诊断中用户切换话题 query={}", query[:60])
         if task.get("pending_purchase"):
@@ -226,14 +244,12 @@ class RouterAgent:
 
         # ═══════════════════════════════════════
         # ★ LLM 意图分类（带上下文，理解指代）
-        # 如果诊断切换话题时已分类过，跳过第二次 LLM 调用
         # ═══════════════════════════════════════
-        intent = None  # 局部变量，不从 state 取
+        intent = None
         if "intent" in state and state["intent"] in ("qa", "consumables", "general"):
-            intent = state.pop("intent")  # 诊断切换话题时已分类，直接复用
+            intent = state.pop("intent")
         else:
             history_context = self._build_history_context(state)
-
             from smart_qa.observability.tracer import get_tracer
 
             tracer = get_tracer()
@@ -247,7 +263,6 @@ class RouterAgent:
         # ★ 根据意图分流
         # ═══════════════════════════════════════
 
-        # qa / general → FAQ ≥95% 直接返回，否则走 RAG+LLM
         if intent in ("qa", "general"):
             from smart_qa.knowledge.faq_matcher import get_faq_matcher
 
@@ -258,7 +273,6 @@ class RouterAgent:
             state["intent"] = "qa"
             return state
 
-        # troubleshoot / consumables → 直接走专属场景
         state["intent"] = intent
         state["scenario"] = intent
         return state

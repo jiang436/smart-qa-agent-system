@@ -129,7 +129,9 @@ class SSEStreamHandler:
             sid = result.get("session_id", initial_state.get("session_id", ""))
             yield SSEStreamHandler._format_event("done", {"message": "回答完成", "intent": intent, "session_id": sid})
 
-            logger.info("SSE 流完成 user={} intent={} session={} answer_len={}", user_id, intent, sid, len(final_answer))
+            logger.info(
+                "SSE 流完成 user={} intent={} session={} answer_len={}", user_id, intent, sid, len(final_answer)
+            )
 
         except Exception as e:
             logger.error("SSE 流异常 user={} session={} err={}", user_id, sid, str(e)[:200])

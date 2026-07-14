@@ -10,6 +10,7 @@
 Usage:
     from smart_qa.security import RateLimiter, SensitiveFilter
 """
+
 import re
 import time
 

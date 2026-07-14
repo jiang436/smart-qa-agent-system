@@ -14,16 +14,13 @@ router = APIRouter()
 async def list_sessions(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
     """获取所有会话摘要列表（管理后台 / 侧栏用）"""
     try:
-
         from smart_qa.database.engine import get_session_factory
 
         factory = get_session_factory()
         async with factory() as db:
             total = await db.scalar(select(func.count(Session.id)))
             result = await db.execute(
-                select(Session)
-                .order_by(desc(Session.updated_at))
-                .offset((page - 1) * page_size).limit(page_size)
+                select(Session).order_by(desc(Session.updated_at)).offset((page - 1) * page_size).limit(page_size)
             )
             sessions = []
             for row in result.scalars().all():
@@ -33,15 +30,17 @@ async def list_sessions(page: int = Query(1, ge=1), page_size: int = Query(20, g
                     if m.get("role") == "user" and m.get("content"):
                         preview = m["content"][:80]
                         break
-                sessions.append({
-                    "session_id": row.session_id,
-                    "user_id": row.user_id,
-                    "intent": row.intent or "",
-                    "message_count": row.message_count or len(msgs),
-                    "preview": preview,
-                    "updated_at": row.updated_at.isoformat() if row.updated_at else "",
-                    "created_at": row.created_at.isoformat() if row.created_at else "",
-                })
+                sessions.append(
+                    {
+                        "session_id": row.session_id,
+                        "user_id": row.user_id,
+                        "intent": row.intent or "",
+                        "message_count": row.message_count or len(msgs),
+                        "preview": preview,
+                        "updated_at": row.updated_at.isoformat() if row.updated_at else "",
+                        "created_at": row.created_at.isoformat() if row.created_at else "",
+                    }
+                )
             return {"total": total or 0, "page": page, "page_size": page_size, "sessions": sessions}
     except Exception as e:
         logger.warning("会话列表查询失败: {}", e)
