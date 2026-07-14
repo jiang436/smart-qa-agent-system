@@ -10,9 +10,10 @@
 Usage:
     from smart_qa.security import RateLimiter, SensitiveFilter
 """
-
 import re
 import time
+
+from smart_qa.observability.logger import logger
 
 try:
     import ahocorasick
@@ -224,8 +225,12 @@ class SensitiveFilter:
         if has_code:
             reasons.append(f"检测到代码注入: {', '.join(code_patterns[:3])}")
 
+        allowed = len(reasons) == 0
+        if not allowed:
+            logger.warning("安全拦截 blocked_reason={} text_len={}", "; ".join(reasons), len(text))
+
         return {
-            "allowed": len(reasons) == 0,
+            "allowed": allowed,
             "blocked_reason": "; ".join(reasons) if reasons else "",
             "details": {
                 "sensitive_words": words,

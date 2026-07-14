@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { getKnowledgeStatus, uploadKnowledgeFile, reloadKnowledge, getBm25Status, rebuildBm25, type KnowledgeStatus } from '@/api'
+import { getKnowledgeStatus, uploadKnowledgeFile, reloadKnowledge, getBm25Status, rebuildBm25, getSearchLogs, type KnowledgeStatus, type SearchLogEntry } from '@/api'
 
 const metrics = ref({
   totalRequests: 12580,
@@ -46,6 +46,27 @@ const bm25Loading = ref(false)
 const bm25Rebuilding = ref(false)
 const bm25RebuildResult = ref('')
 const bm25StaleTip = ref(false)
+
+// ── Search Logs ──
+const searchLogs = ref<SearchLogEntry[]>([])
+const searchLogsTotal = ref(0)
+const searchLogsPage = ref(1)
+const searchLogsLoading = ref(false)
+
+async function loadSearchLogs() {
+  searchLogsLoading.value = true
+  try {
+    const res = await getSearchLogs(searchLogsPage.value, 20)
+    searchLogs.value = res.logs
+    searchLogsTotal.value = res.total
+  } catch { /* ignore */ }
+  searchLogsLoading.value = false
+}
+
+function intentBadge(intent: string) {
+  const map: Record<string, string> = { qa: 'bg-blue-50 text-blue-600', troubleshoot: 'bg-amber-50 text-amber-700', consumables: 'bg-emerald-50 text-emerald-700', device_control: 'bg-purple-50 text-purple-600', report: 'bg-cyan-50 text-cyan-600', general: 'bg-slate-100 text-slate-600' }
+  return map[intent] || 'bg-slate-100 text-slate-600'
+}
 
 async function loadStatus() {
   kbLoading.value = true
@@ -345,31 +366,42 @@ onMounted(() => {
         <div class="px-5 py-3 border-b border-slate-100">
           <h3 class="text-xs font-semibold text-slate-500 uppercase">最近会话</h3>
         </div>
-        <table class="w-full text-xs">
+      </div>
+
+      <!-- Search Logs -->
+      <div class="bg-white rounded-lg border border-slate-200">
+        <div class="flex items-center justify-between px-5 py-3 border-b border-slate-100">
+          <h3 class="text-xs font-semibold text-slate-500 uppercase">搜索日志</h3>
+          <div class="flex items-center gap-2">
+            <span class="text-[11px] text-slate-400">{{ searchLogsTotal }} 条记录</span>
+            <button @click="loadSearchLogs" class="text-[11px] text-accent hover:underline">刷新</button>
+          </div>
+        </div>
+        <div v-if="searchLogsLoading" class="p-5 text-xs text-slate-400">加载中…</div>
+        <table v-else class="w-full text-xs">
           <thead>
             <tr class="text-slate-400 border-b border-slate-100">
-              <th class="text-left px-5 py-2 font-medium">会话 ID</th>
               <th class="text-left px-5 py-2 font-medium">用户</th>
+              <th class="text-left px-5 py-2 font-medium">问题</th>
               <th class="text-left px-5 py-2 font-medium">意图</th>
-              <th class="text-left px-5 py-2 font-medium">消息数</th>
+              <th class="text-left px-5 py-2 font-medium">耗时</th>
+              <th class="text-left px-5 py-2 font-medium">回答长度</th>
               <th class="text-left px-5 py-2 font-medium">时间</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="s in recentSessions" :key="s.id" class="border-b border-slate-50 hover:bg-slate-50">
-              <td class="px-5 py-2.5 font-mono text-slate-500">{{ s.id }}</td>
-              <td class="px-5 py-2.5">{{ s.user }}</td>
+            <tr v-for="log in searchLogs" :key="log.id" class="border-b border-slate-50 hover:bg-slate-50">
+              <td class="px-5 py-2.5 font-mono text-slate-500 text-[10px]">{{ log.user_id }}</td>
+              <td class="px-5 py-2.5 text-slate-700 max-w-xs truncate">{{ log.query }}</td>
               <td class="px-5 py-2.5">
-                <span :class="[
-                  'px-1.5 py-0.5 rounded text-[10px] font-medium',
-                  s.intent === 'qa' ? 'bg-accent-soft text-accent' :
-                  s.intent === 'troubleshoot' ? 'bg-amber-50 text-amber-700' :
-                  s.intent === 'consumables' ? 'bg-emerald-50 text-emerald-700' :
-                  'bg-slate-100 text-slate-600'
-                ]">{{ intentLabels[s.intent] || s.intent }}</span>
+                <span :class="['px-1.5 py-0.5 rounded text-[10px] font-medium', intentBadge(log.intent)]">{{ log.intent || '-' }}</span>
               </td>
-              <td class="px-5 py-2.5 text-slate-500">{{ s.messages }}</td>
-              <td class="px-5 py-2.5 text-slate-400">{{ s.time }}</td>
+              <td class="px-5 py-2.5 text-slate-500">{{ (log.duration_ms / 1000).toFixed(1) }}s</td>
+              <td class="px-5 py-2.5 text-slate-500">{{ log.answer_length }}</td>
+              <td class="px-5 py-2.5 text-slate-400 text-[10px]">{{ log.created_at?.slice(0, 19)?.replace('T', ' ') || '-' }}</td>
+            </tr>
+            <tr v-if="!searchLogs.length && !searchLogsLoading">
+              <td colspan="6" class="px-5 py-8 text-center text-slate-400">暂无搜索记录</td>
             </tr>
           </tbody>
         </table>

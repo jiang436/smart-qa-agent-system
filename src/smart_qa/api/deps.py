@@ -1,13 +1,21 @@
 """API 依赖注入 — FastAPI Depends() 集中管理
 
-所有路由通过 Depends() 获取所需组件，避免硬编码实例化。
+所有路由通过 Depends() 获取所需的安全检查组件，避免硬编码实例化。
 
 提供的依赖:
-  - check_rate_limit:   检查请求是否超出限流
-  - check_security:     检查输入是否包含敏感/注入内容
-  - get_agent_graph:    获取 LangGraph 编译后的图
+  - check_rate_limit:   检查请求是否超出三层令牌桶限流 (429)
+  - check_security:     检查输入是否包含敏感词/注入内容 (400)
+  - get_agent_graph:    获取 LangGraph 编译后的图（同 smart_qa.deps）
 
-Usage:
+请求处理管线:
+    POST 请求进入路由前依次经过:
+        check_rate_limit(user_id 维度的令牌桶检查)
+        → check_security(message 的四层安全过滤)
+        → 路由处理 → 响应
+
+    GET 请求跳过安全检查（限流和安全过滤均不生效）。
+
+用法:
     @router.post("/chat")
     async def chat(
         req: ChatRequest,
@@ -29,8 +37,21 @@ async def check_rate_limit(
 ) -> None:
     """检查请求频率限制
 
-    从请求体中提取 user_id（仅对 POST 请求）。
-    对于 GET 请求，跳过限流检查。
+    从请求体中提取 user_id，调用 RateLimiter.check_request() 进行三层检查：
+      1. 全局令牌桶：所有用户共享
+      2. 用户级令牌桶：每个用户独立
+      3. 每日 Token 预算（通过 deduct_token 方法）
+
+    Args:
+        request: FastAPI 请求对象（GET 请求跳过限流检查）
+        limiter: RateLimiter 单例（由 Depends 注入）
+
+    Raises:
+        HTTPException 429: 请求频率超过限制
+
+    设计说明:
+        GET 请求（如健康检查、页面加载）跳过限流。
+        限流基于 user_id，从 JSON body 提取，提取失败则视为 anonymous。
     """
     if request.method == "GET":
         return
@@ -53,7 +74,22 @@ async def check_security(
 ) -> None:
     """检查输入内容安全性
 
-    对 POST /chat 类请求检查消息内容。
+    对 POST 请求的消息内容执行四道安全防线：
+      1. AC 自动机敏感词匹配（暴力、色情、赌博等）
+      2. Prompt 注入检测（忽略指令、DAN角色扮演等）
+      3. 代码注入检测（XSS标签、SQL注入、Shell命令等）
+      4. PII 输出过滤（在响应层通过 check_output 执行）
+
+    Args:
+        request: FastAPI 请求对象（GET 请求跳过安全检查）
+        security: SensitiveFilter 单例（由 Depends 注入）
+
+    Raises:
+        HTTPException 400: 输入内容被安全策略拦截
+
+    设计说明:
+        拦截是在输入层做的，输出层的 PII 过滤在路由中独立调用 security.check_output()。
+        两者职责分离：输入层防御攻击，输出层保护隐私。
     """
     if request.method == "GET":
         return

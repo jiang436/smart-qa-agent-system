@@ -26,7 +26,7 @@ try:
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
     from opentelemetry.trace import SpanKind, Status, StatusCode
 
     HAS_OTEL = True
@@ -68,10 +68,7 @@ class Tracer:
 
         provider = TracerProvider(resource=resource)
 
-        # 控制台导出（开发环境）
-        provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
-
-        # OTLP 导出（生产环境）
+        # OTLP 导出（生产环境 — 有 endpoint 时才启用）
         if otlp_endpoint:
             try:
                 otlp_exporter = OTLPSpanExporter(endpoint=otlp_endpoint)

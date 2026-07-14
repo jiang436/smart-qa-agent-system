@@ -17,6 +17,15 @@ export interface Citation {
   matched_sentence: string
 }
 
+export interface SessionItem {
+  session_id: string
+  user_id: string
+  intent: string
+  message_count: number
+  preview: string
+  updated_at: string
+}
+
 export const useChatStore = defineStore('chat', () => {
   const messages = ref<Message[]>([])
   const sessionId = ref('')
@@ -24,6 +33,8 @@ export const useChatStore = defineStore('chat', () => {
   const isProcessing = ref(false)
   const currentStage = ref('')
   const error = ref('')
+  const sessions = ref<SessionItem[]>([])
+  const sessionsTotal = ref(0)
 
   const lastAssistantMsg = computed(() => {
     const msgs = messages.value
@@ -44,7 +55,7 @@ export const useChatStore = defineStore('chat', () => {
     error.value = ''
     const id = crypto.randomUUID()
     messages.value.push({
-      id, role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true
+      id, role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
     })
     return id
   }
@@ -70,14 +81,26 @@ export const useChatStore = defineStore('chat', () => {
     isProcessing.value = false
   }
 
+  function loadMessages(msgs: Message[]) {
+    messages.value = msgs
+  }
+
   function clearMessages() {
     messages.value = []
     currentIntent.value = ''
     error.value = ''
+    sessionId.value = ''
+  }
+
+  function setSessions(list: SessionItem[], total: number) {
+    sessions.value = list
+    sessionsTotal.value = total
   }
 
   return {
-    messages, sessionId, currentIntent, isProcessing, currentStage, error, lastAssistantMsg,
-    addMessage, startStreaming, appendToken, finishStreaming, setStage, setError, clearMessages,
+    messages, sessionId, currentIntent, isProcessing, currentStage, error,
+    sessions, sessionsTotal, lastAssistantMsg,
+    addMessage, startStreaming, appendToken, finishStreaming,
+    setStage, setError, loadMessages, clearMessages, setSessions,
   }
 })

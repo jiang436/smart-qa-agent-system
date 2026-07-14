@@ -141,3 +141,59 @@ export async function rebuildBm25(): Promise<any> {
   const res = await fetch(`${BASE}/knowledge/bm25/rebuild`, { method: 'POST' })
   return res.json()
 }
+
+// ── Search Logs ──
+
+export interface SearchLogEntry {
+  id: number
+  session_id: string
+  user_id: string
+  query: string
+  intent: string
+  answer_length: number
+  duration_ms: number
+  source: string
+  created_at: string
+}
+
+export interface SearchLogsResponse {
+  total: number
+  page: number
+  page_size: number
+  logs: SearchLogEntry[]
+}
+
+export async function getSearchLogs(page = 1, pageSize = 20): Promise<SearchLogsResponse> {
+  const res = await fetch(`${BASE}/search/logs?page=${page}&page_size=${pageSize}`)
+  return res.json()
+}
+
+export async function submitFeedback(searchLogId: number, userId: string, action: string, detail = '') {
+  const params = new URLSearchParams({ search_log_id: String(searchLogId), user_id: userId, action, detail })
+  const res = await fetch(`${BASE}/search/feedback`, { method: 'POST', body: params })
+  return res.json()
+}
+
+// ── Sessions ──
+
+export interface SessionSummary {
+  session_id: string
+  user_id: string
+  intent: string
+  message_count: number
+  preview: string
+  updated_at: string
+  created_at: string
+}
+
+export interface SessionsResponse {
+  total: number
+  page: number
+  page_size: number
+  sessions: SessionSummary[]
+}
+
+export async function getSessions(page = 1, pageSize = 50): Promise<SessionsResponse> {
+  const res = await fetch(`${BASE}/sessions?page=${page}&page_size=${pageSize}`)
+  return res.json()
+}

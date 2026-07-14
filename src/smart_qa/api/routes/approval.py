@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from smart_qa.models.approval_schema import ApproveRequest, ApproveResponse
+from smart_qa.observability.logger import logger
 
 router = APIRouter()
 
@@ -16,10 +17,13 @@ async def approve_action(req: ApproveRequest):
     """
     from smart_qa.agent.agents.hitl import HITLManager
 
+    logger.info("HITL 审批 session={} decision={} feedback={}", req.session_id, req.decision, req.feedback)
+
     hitl = HITLManager()
     result = hitl.resolve_approval(req.session_id, req.decision, req.feedback)
 
     if "error" in result:
+        logger.warning("HITL 审批异常 session={} err={}", req.session_id, result["error"])
         return ApproveResponse(
             status="error",
             decision=None,

@@ -43,6 +43,8 @@ async def memory_reader_node(state: dict, config, *, store) -> dict:
     user_id = state.get("user_id", "anonymous")
     if not user_id or user_id in ("anonymous", "", "default"):
         return state
+    if store is None:
+        return state
 
     try:
         item = await store.aget(("users", user_id), "profile")
@@ -66,6 +68,8 @@ async def memory_writer_node(state: dict, config, *, store) -> dict:
     if not user_id or user_id in ("anonymous", "", "default"):
         return state
     if not state.get("final_answer"):
+        return state
+    if store is None:
         return state
 
     # 提取用户消息

@@ -240,7 +240,8 @@ class RouterAgent:
             with tracer.start_span("router.classify", attributes={"query": query[:100]}):
                 intent = await self._classify_intent(query, history_context)
 
-            logger.info("LLM意图分类 intent={} query={}", intent, query[:80])
+            source = "LLM" if self.llm else "关键词"
+            logger.info("意图分类({}) intent={} query={}", source, intent, query[:80])
 
         # ═══════════════════════════════════════
         # ★ 根据意图分流

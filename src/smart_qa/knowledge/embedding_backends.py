@@ -25,10 +25,12 @@ class LocalEmbedding(EmbeddingBackend):
     dimension: int = 512
 
     def __init__(self, model_name: str = "BAAI/bge-small-zh-v1.5"):
+        import torch
         from sentence_transformers import SentenceTransformer
 
-        self._model = SentenceTransformer(model_name)
-        logger.info("Embedding 本地模型已加载: {}", model_name)
+        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        self._model = SentenceTransformer(model_name, device=device)
+        logger.info("Embedding 本地模型已加载: {} (device={})", model_name, device)
 
     def encode(self, texts: list[str]) -> np.ndarray:
         return self._model.encode(texts, normalize_embeddings=True)  # type: ignore[return-value]
@@ -62,22 +64,27 @@ class OllamaEmbedding(EmbeddingBackend):
 
 
 class APIEmbedding(EmbeddingBackend):
-    """远程 API 嵌入（OpenAI 兼容）"""
+    """远程 API 嵌入（OpenAI 兼容）— 自动检测维度"""
 
-    def __init__(self, api_key: str, base_url: str, model: str = "text-embedding-3-small", dim: int = 512):
+    def __init__(self, api_key: str, base_url: str, model: str = "text-embedding-3-small"):
         from openai import OpenAI
 
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
-        self._dim = dim
+        self._dim: int | None = None
 
     @property
     def dimension(self) -> int:
+        if self._dim is None:
+            return 768  # 首次调用前返回常见默认值
         return self._dim
 
     def encode(self, texts: list[str]) -> np.ndarray:
         resp = self.client.embeddings.create(input=texts, model=self.model)
-        return np.array([item.embedding for item in resp.data], dtype=np.float32)
+        data = np.array([item.embedding for item in resp.data], dtype=np.float32)
+        if self._dim is None and data.size > 0:
+            self._dim = data.shape[-1]
+        return data
 
 
 def create_embedding_backend(

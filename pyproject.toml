@@ -39,7 +39,7 @@ dependencies = [
     "opentelemetry-api>=1.39.0,<1.43.0",
     "opentelemetry-sdk>=1.39.0,<1.43.0",
     # Utils
-    "httpx>=0.28.1",
+    "httpx[socks]>=0.28.1",
     "python-dotenv>=1.2.2",
     "loguru>=0.7.3",
     # AI
@@ -50,6 +50,7 @@ dependencies = [
     "psycopg-binary>=3.3.4",
     "opentelemetry-instrumentation-fastapi>=0.63b1",
     "opentelemetry-instrumentation-sqlalchemy>=0.63b1",
+    "huggingface-hub>=1.22.0",
 ]
 
 [project.scripts]

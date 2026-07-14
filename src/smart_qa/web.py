@@ -100,14 +100,42 @@ async def lifespan(app: FastAPI):
         logger.warning("BM25 知识库加载失败: {}", e)
 
     setup_metrics(app)
+    # 预加载 Embedding 模型（避免首次请求等待 80+s）
+    try:
+        from smart_qa.knowledge.vector_store import get_embedding
+
+        _ = get_embedding()
+        _.encode(["预热"])
+        logger.info("Embedding 模型已预加载 (含 warm-up)")
+    except Exception as e:
+        logger.debug("Embedding 模型预加载跳过: {}", e)
+
+    # 预加载 Reranker Cross-Encoder 模型（避免首次 RAG 请求卡住）
+    try:
+        from smart_qa.rag.reranker import Reranker
+
+        _ = Reranker()
+        logger.info("Reranker 模型已预加载")
+    except Exception as e:
+        logger.debug("Reranker 预加载跳过: {}", e)
+
     # 初始化 LangGraph Store（PostgreSQL 长期记忆）
     try:
-        from langgraph.store.postgres import PostgresStore
+        from langgraph.store.postgres.aio import AsyncPostgresStore
+        from psycopg_pool import AsyncConnectionPool
 
         from smart_qa.agent.graph import set_store
 
         pg_dsn = settings.postgres_dsn.replace("+asyncpg", "")
-        store = PostgresStore.from_conn_string(pg_dsn).__enter__()
+        pool = AsyncConnectionPool(
+            pg_dsn,
+            min_size=1,
+            max_size=5,
+            kwargs={"autocommit": True, "prepare_threshold": 0},
+            open=False,
+        )
+        await pool.open()
+        store = AsyncPostgresStore(conn=pool)
         await store.setup()
         set_store(store)
         logger.info("LangGraph Store 已就绪 (PostgresStore)")
@@ -143,11 +171,12 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 
 app.include_router(router, prefix="/api/v1")

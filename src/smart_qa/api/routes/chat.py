@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 
 from smart_qa.api.deps import check_rate_limit, check_security
 from smart_qa.api.stream_handler import SSEStreamHandler
+from smart_qa.config import settings
 from smart_qa.deps import get_agent_graph, get_security
 from smart_qa.memory.conversation_store import load_messages, save_messages
 from smart_qa.models.chat_schema import ChatRequest, ChatResponse
@@ -36,6 +37,7 @@ def _create_initial_state(user_id: str, message: str, session_id: str = "") -> d
         "scenario": None,
         "step": 0,
         "max_steps": 15,
+        "max_execution_time": 60,
         "tool_calls_history": [],
         "final_answer": None,
         "error": None,
@@ -118,6 +120,26 @@ async def chat(
                 await save_messages(session_id, request.user_id, final_messages, intent=intent)
         except Exception as e:
             logger.debug("PG 对话保存失败: {}", e)
+
+        # 记录搜索日志
+        try:
+            import httpx
+
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    f"http://localhost:{settings.port}/api/v1/search/log",
+                    params={
+                        "query": request.message[:200],
+                        "user_id": request.user_id,
+                        "session_id": session_id,
+                        "intent": intent,
+                        "answer_length": len(answer),
+                        "duration_ms": int(elapsed * 1000),
+                    },
+                    timeout=2,
+                )
+        except Exception as e:
+            logger.debug("搜索日志记录失败: {}", e)
 
         return ChatResponse(
             answer=answer or "抱歉，处理您的问题时出现了错误。",

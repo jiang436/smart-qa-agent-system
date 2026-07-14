@@ -2,9 +2,9 @@
 import pytest
 from pydantic import ValidationError
 
+from smart_qa.models.approval_schema import ApproveRequest
 from smart_qa.models.chat_schema import ChatRequest, ChatResponse
 from smart_qa.models.device_schema import DeviceStatus, ScheduleCreate
-from smart_qa.models.approval_schema import ApproveRequest
 from smart_qa.models.report_schema import UsageStats
 
 

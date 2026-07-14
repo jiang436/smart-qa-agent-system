@@ -45,7 +45,7 @@ class EmbeddingModel:
         self._backend = create_embedding_backend(
             backend=settings.embedding_backend,
             model=settings.embedding_model,
-            api_key=getattr(settings, "llm_api_key", ""),
+            api_key=settings.embedding_api_key or settings.llm_api_key,
             base_url=settings.embedding_base_url or settings.llm_base_url,
         )
 

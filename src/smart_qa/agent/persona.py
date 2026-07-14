@@ -10,6 +10,8 @@ Usage:
 
 import re
 
+from smart_qa.observability.logger import logger
+
 # ═══════════════════════════════════════════
 # 核心人设
 # ═══════════════════════════════════════════
@@ -122,6 +124,7 @@ def is_pure_greeting(query: str) -> str | None:
 
     for pattern in GREETING_PATTERNS:
         if re.match(pattern, q, re.IGNORECASE):
+            logger.debug("问候检测命中 pattern={} query={}", pattern, q[:40])
             # 判断具体类型
             if any(kw in q.lower() for kw in ["再见", "拜拜", "bye", "回头见", "下次见", "88"]):
                 return "bye"
@@ -170,7 +173,6 @@ def is_out_of_scope(query: str) -> bool:
     # 先排除纯寒暄
     if is_pure_greeting(query):
         return False
-
     # 检查是否命中越界类别关键词
     for _category, keywords in OUT_OF_SCOPE_CATEGORIES.items():
         for kw in keywords:
@@ -207,6 +209,7 @@ def is_out_of_scope(query: str) -> bool:
                     "避障",
                 ]
                 if not any(bk in q for bk in business_keywords):
+                    logger.info("越界检测命中 category={} keyword={} query={}", _category, kw, q[:60])
                     return True
 
     return False

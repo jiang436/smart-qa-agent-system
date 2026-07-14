@@ -249,7 +249,7 @@ class LoopDetector:
     def _apply_result(self, state: dict, result: LoopResult):
         """根据检测结果更新 state"""
         logger.warning("防循环触发 action={} reason={}", result.action, result.reason)
-        state["loop_detected"]
+        state["loop_detected"] = True
         state["loop_reason"] = result.reason
         state["loop_action"] = result.action
 

@@ -29,7 +29,7 @@ router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 
 
 def _get_milvus() -> MilvusClient:
-    return MilvusClient(host=settings.milvus_host, port=settings.milvus_port)
+    return MilvusClient(host=settings.milvus_host, port=settings.milvus_port, timeout=5)
 
 
 def _ensure_collection(client: MilvusClient) -> str:

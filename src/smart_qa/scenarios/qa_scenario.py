@@ -79,8 +79,10 @@ class QAScenario:
             更新后的 state，final_answer 已填充
         """
         start_time = time.time()
-
         query = QAScenario._extract_query(state)
+        user_id = state.get("user_id", "anonymous")
+        logger.info("QA场景开始 user={} query={}", user_id, query[:80])
+
         if not query:
             state["final_answer"] = "您好！请问有什么关于产品的问题需要帮您解答？"
             return state
@@ -122,10 +124,9 @@ class QAScenario:
             await cache.set(query, final_answer)
 
         elapsed = time.time() - start_time
+        logger.info("QA场景完成 user={} latency={:.1f}s answer_len={} cache_hit={}", user_id, elapsed, len(state.get("final_answer", "")), bool(cached_answer))
         if elapsed > 3.0:
-            logger.warning("QAScenario 慢查询 latency={:.1f}s query={}", elapsed, query[:80])
-
-        return state
+            logger.warning("QA场景慢查询 latency={:.1f}s query={}", elapsed, query[:80])
 
     @staticmethod
     def _extract_query(state: dict) -> str:
