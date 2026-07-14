@@ -90,11 +90,27 @@ def read_documents(docs_dir: str) -> list[dict]:
 
 
 def ensure_collection(client: MilvusClient, collection_name: str, dim: int) -> str:
-    """确保集合存在，不存在则创建"""
+    """确保集合存在且维度匹配，不匹配则重建"""
     if client.has_collection(collection_name):
-        client.load_collection(collection_name)
-        print(f"[InitVector] 集合已存在: {collection_name} (dim={dim})")
-        return collection_name
+        # 检查现有集合维度
+        try:
+            info = client.describe_collection(collection_name)
+            existing_dim = info.get("dim") or next(
+                (f.get("params", {}).get("dim") for f in info.get("fields", []) if f.get("name") == "vector"), 0
+            )
+            if existing_dim == dim:
+                client.load_collection(collection_name)
+                print(f"[InitVector] 集合已存在: {collection_name} (dim={dim})")
+                return collection_name
+            else:
+                print(f"[InitVector] 维度不匹配 (现有={existing_dim}, 新={dim})，删除重建")
+                client.drop_collection(collection_name)
+        except Exception as e:
+            print(f"[InitVector] 检查集合失败: {e}，删除重建")
+            try:
+                client.drop_collection(collection_name)
+            except Exception:
+                pass
 
     schema = MilvusClient.create_schema(auto_id=True, enable_dynamic_field=False)
     schema.add_field("id", datatype=DataType.INT64, is_primary=True)
@@ -297,7 +313,7 @@ def init_vector_store(docs_dir: str = None, drop_existing: bool = False):
 
     # 1. 创建 MilvusClient（新 API，无弃用警告）
     print(f"[InitVector] 连接 Milvus: {settings.milvus_host}:{settings.milvus_port}")
-    client = MilvusClient(host=settings.milvus_host, port=settings.milvus_port)
+    client = MilvusClient(host=settings.milvus_host, port=settings.milvus_port, timeout=5)
 
     # 2. 删旧建新
     if drop_existing and client.has_collection(collection_name):

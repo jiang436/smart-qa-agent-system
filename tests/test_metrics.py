@@ -1,6 +1,7 @@
 """Eval 指标测试"""
 import pytest
-from smart_qa.evaluation.metrics import keyword_recall, intent_accuracy, summary
+
+from smart_qa.evaluation.metrics import intent_accuracy, keyword_recall, summary
 
 
 class TestKeywordRecall:

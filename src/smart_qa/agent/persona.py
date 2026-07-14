@@ -10,6 +10,8 @@ Usage:
 
 import re
 
+from smart_qa.observability.logger import logger
+
 # ═══════════════════════════════════════════
 # 核心人设
 # ═══════════════════════════════════════════
@@ -102,6 +104,30 @@ OUT_OF_SCOPE_CATEGORIES = {
     "新闻时事": ["新闻", "政策", "国际形势", "经济形势", "房价", "股市"],
     "生活服务": ["外卖", "打车", "订票", "快递查询", "天气", "导航"],
     "其他设备": ["手机", "电脑", "电视", "空调", "冰箱", "洗衣机", "汽车"],
+    "服务器运维": [
+        "nginx",
+        "apache",
+        "服务器",
+        "upstream",
+        "gateway",
+        "proxy",
+        "docker",
+        "kubernetes",
+        "k8s",
+        "linux",
+        "ssh",
+        "部署",
+        "运维",
+        "端口",
+        "负载均衡",
+        "container",
+        "pod",
+        "集群",
+        "日志",
+        "监控",
+        "grafana",
+        "prometheus",
+    ],
     "敏感话题": ["政治", "色情", "暴力", "赌博", "毒品", "违法", "翻墙", "vpn"],
 }
 
@@ -122,6 +148,7 @@ def is_pure_greeting(query: str) -> str | None:
 
     for pattern in GREETING_PATTERNS:
         if re.match(pattern, q, re.IGNORECASE):
+            logger.debug("问候检测命中 pattern={} query={}", pattern, q[:40])
             # 判断具体类型
             if any(kw in q.lower() for kw in ["再见", "拜拜", "bye", "回头见", "下次见", "88"]):
                 return "bye"
@@ -170,7 +197,6 @@ def is_out_of_scope(query: str) -> bool:
     # 先排除纯寒暄
     if is_pure_greeting(query):
         return False
-
     # 检查是否命中越界类别关键词
     for _category, keywords in OUT_OF_SCOPE_CATEGORIES.items():
         for kw in keywords:
@@ -207,6 +233,7 @@ def is_out_of_scope(query: str) -> bool:
                     "避障",
                 ]
                 if not any(bk in q for bk in business_keywords):
+                    logger.info("越界检测命中 category={} keyword={} query={}", _category, kw, q[:60])
                     return True
 
     return False

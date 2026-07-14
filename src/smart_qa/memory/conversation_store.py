@@ -1,25 +1,25 @@
-"""对话持久化存储 — PostgreSQL 版
+"""对话持久化存储 — 委托到 SessionRepository
 
-替代 Redis 作为多轮对话的持久化后端。
-PostgreSQL 保证服务重启后对话上下文不丢失。
+保持向后兼容的函数式 API：
 
-用法:
     from smart_qa.memory.conversation_store import save_messages, load_messages
 
-    # 保存 (自动创建/更新 session 记录)
-    await save_messages(session_id, user_id, messages, intent="qa")
+底层实现见 smart_qa.repositories.session_repository:
+    - PostgresSessionRepository  → 生产用（PostgreSQL 存储）
+    - InMemorySessionRepository  → 测试用（内存存储）
 
-    # 加载
-    msgs = await load_messages(session_id)  # -> list[dict]
+模块级单例 _repo 默认为 PostgresSessionRepository，测试时可替换为 InMemorySessionRepository。
+
+典型用法:
+    保存: save_messages(session_id, user_id, messages, intent="qa")
+    读取: messages = await load_messages(session_id, limit=50)
 """
 
-from __future__ import annotations
+from smart_qa.repositories.session_repository import PostgresSessionRepository
 
-import json
-
-from smart_qa.observability.logger import logger
-
-_TTL_DAYS = 7
+# 模块级 Repository 实例（单例）
+# 生产环境使用 PostgreSQL；测试时可替换为 InMemorySessionRepository
+_repo = PostgresSessionRepository()
 
 
 async def save_messages(
@@ -30,79 +30,42 @@ async def save_messages(
 ):
     """持久化对话消息到 PostgreSQL
 
-    自动 UPSERT：session 存在则更新，不存在则创建。
+    委托到 PostgresSessionRepository.save() 执行 UPSERT 操作。
+    同一 session_id 的消息会覆盖之前的记录。
+
+    参数:
+        session_id: 会话唯一标识（由 chat.py 中的 uuid 生成）
+        user_id: 用户 ID
+        messages: 对话消息列表，每个元素为 {"role": ..., "content": ...}
+        intent: 本轮对话识别出的意图（qa / troubleshoot / consumables / ...）
+
+    注意:
+        此函数可能抛异常，调用方（chat.py / stream_handler.py）负责 try/except。
+        异常不会阻塞主流程，仅记录 debug 日志后静默忽略。
+
+    性能:
+        每次保存完整消息列表，适合单轮保存。
+        高频场景应考虑增量追加。
     """
-    if not session_id or not messages:
-        return
-
-    try:
-        from sqlalchemy import text
-
-        from smart_qa.database.engine import get_session_factory
-
-        factory = get_session_factory()
-        async with factory() as db:
-            # 检查 session 是否存在
-            row = await db.execute(
-                text("SELECT id FROM sessions WHERE session_id = :sid"),
-                {"sid": session_id},
-            )
-            msgs_json = json.dumps(messages, ensure_ascii=False)
-            msg_count = len(messages)
-
-            if row.fetchone():
-                await db.execute(
-                    text("""
-                        UPDATE sessions
-                        SET messages = :msgs,
-                            message_count = :cnt,
-                            intent = COALESCE(:intent, intent),
-                            updated_at = NOW()
-                        WHERE session_id = :sid
-                    """),
-                    {"msgs": msgs_json, "cnt": msg_count, "intent": intent, "sid": session_id},
-                )
-            else:
-                await db.execute(
-                    text("""
-                        INSERT INTO sessions
-                            (session_id, user_id, messages, message_count, intent)
-                        VALUES
-                            (:sid, :uid, :msgs, :cnt, :intent)
-                    """),
-                    {"sid": session_id, "uid": user_id, "msgs": msgs_json, "cnt": msg_count, "intent": intent},
-                )
-            await db.commit()
-    except Exception as e:
-        logger.warning("PG 保存对话失败 session={} err={}", session_id, e)
+    await _repo.save(session_id, user_id, messages, intent=intent)
 
 
 async def load_messages(session_id: str, limit: int = 50) -> list[dict]:
     """从 PostgreSQL 加载对话历史
 
-    Returns:
-        消息列表 [{role, content}, ...]，按时间顺序
-        无历史则返回 []
+    委托到 PostgresSessionRepository.load() 执行 SELECT 查询。
+    返回最近 limit 条消息，按时间升序排列。
+
+    参数:
+        session_id: 会话 ID
+        limit: 最大返回消息数（默认 50）
+
+    返回值:
+        list[dict] — 对话消息列表，每个元素为 {"role": ..., "content": ...}
+        会话不存在时返回空列表。
+
+    使用场景:
+        - 服务重启后恢复对话上下文
+        - 前端查询会话历史（GET /session/{id}/history）
     """
-    if not session_id:
-        return []
-
-    try:
-        from sqlalchemy import text
-
-        from smart_qa.database.engine import get_session_factory
-
-        factory = get_session_factory()
-        async with factory() as db:
-            row = await db.execute(
-                text("SELECT messages FROM sessions WHERE session_id = :sid"),
-                {"sid": session_id},
-            )
-            result = row.fetchone()
-            if result and result[0]:
-                msgs = json.loads(result[0])
-                return msgs[-limit:] if isinstance(msgs, list) else []
-    except Exception as e:
-        logger.debug("PG 加载对话失败 session={} err={}", session_id, e)
-
-    return []
+    return await _repo.load(session_id, limit=limit)

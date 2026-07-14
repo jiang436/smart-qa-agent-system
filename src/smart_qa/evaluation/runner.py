@@ -129,14 +129,16 @@ class EvalRunner:
         from smart_qa.agent.graph import get_agent
 
         graph = self.graph or get_agent()
+        session_id = f"eval_{int(time.time())}_{id(query)}"
         state = {
             "messages": [{"role": "user", "content": query}],
             "user_id": "eval",
-            "session_id": f"eval_{int(time.time())}",
+            "session_id": session_id,
             "intent": None,
             "scenario": None,
             "step": 0,
             "max_steps": 15,
+            "max_execution_time": 60,
             "tool_calls_history": [],
             "final_answer": None,
             "error": None,

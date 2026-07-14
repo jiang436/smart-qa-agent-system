@@ -16,6 +16,7 @@ Usage:
 """
 
 import re
+import threading
 
 from smart_qa.knowledge.bm25 import BM25Index
 from smart_qa.knowledge.vector_store import get_embedding
@@ -69,16 +70,43 @@ _STOP_WORDS: set[str] = {
     "哦",
     "嗯",
 }
-
-
-# 全局共享 BM25 + 预计算向量
 _shared_bm25 = None
 _doc_vectors = None  # 预计算的文档向量 (N x 512)
+_load_lock = threading.Lock()
+
+
+def _load_knowledge_bm25():
+    """懒加载: 首次调用时构建 BM25 + 预计算 BGE 向量
+
+    和 Milvus 使用完全相同的文档源 + 分块策略，
+    确保两个索引的知识覆盖一致。
+
+    Thread-safe: 使用双重检查锁（double-checked locking）。
+    """
+    global _shared_bm25, _doc_vectors
+    if _shared_bm25 is not None:
+        return _shared_bm25
+
+    with _load_lock:
+        if _shared_bm25 is not None:
+            return _shared_bm25
+
+        bm = BM25Index()
+        docs = _collect_knowledge_texts()
+        if docs:
+            bm.build(docs)
+            _shared_bm25 = bm
+            emb = get_embedding()
+            _doc_vectors = emb.encode(docs)
+            logger.info("知识库 BM25 加载完成 docs={} vectors_shape={}", len(docs), _doc_vectors.shape)
+    return _shared_bm25
 
 
 def set_shared_bm25(bm25):
-    global _shared_bm25
-    _shared_bm25 = bm25
+    """外部注入 BM25 实例（由 web.py lifespan 调用）"""
+    with _load_lock:
+        global _shared_bm25
+        _shared_bm25 = bm25
 
 
 def _collect_knowledge_texts() -> list[str]:
@@ -309,6 +337,7 @@ class MultiLayerRetriever:
                     param={"metric_type": "IP", "params": {"nprobe": 10}},
                     limit=top_k,
                     output_fields=["content", "source"],
+                    timeout=5,
                 )
                 return [
                     {

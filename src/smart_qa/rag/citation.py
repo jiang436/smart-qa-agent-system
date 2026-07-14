@@ -65,27 +65,28 @@ class CitationTracker:
         unverified = []
 
         for sentence in sentences:
-            if len(sentence.strip()) < 5:
+            # 短句（<5字）仍尝试匹配文档，匹配不到也不加 [无来源] 标记
+            # 避免 "好的"、"嗯嗯" 等非事实性短句污染 unverified 列表
+            is_short = len(sentence.strip()) < 5
+            if is_short:
                 cited_sentences.append(sentence)
-                continue
-
-            # 找最匹配的文档
-            best_match = self._find_best_match(sentence)
-            if best_match:
-                doc_info = self._documents[best_match["doc_id"]]
-                source_tag = f"[来源: {doc_info['source']}]"
-                cited_sentences.append(f"{sentence}{source_tag}")
-                citations.append(
-                    {
-                        "doc_id": best_match["doc_id"],
-                        "source": doc_info["source"],
-                        "matched_sentence": sentence,
-                        "score": best_match["score"],
-                    }
-                )
             else:
-                cited_sentences.append(f"{sentence}[无来源]")
-                unverified.append(sentence)
+                best_match = self._find_best_match(sentence)
+                if best_match:
+                    doc_info = self._documents[best_match["doc_id"]]
+                    source_tag = f"[来源: {doc_info['source']}]"
+                    cited_sentences.append(f"{sentence}{source_tag}")
+                    citations.append(
+                        {
+                            "doc_id": best_match["doc_id"],
+                            "source": doc_info["source"],
+                            "matched_sentence": sentence,
+                            "score": best_match["score"],
+                        }
+                    )
+                else:
+                    cited_sentences.append(f"{sentence}[无来源]")
+                    unverified.append(sentence)
 
         cited_text = "".join(cited_sentences)
 

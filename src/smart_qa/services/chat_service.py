@@ -79,6 +79,7 @@ class ChatService:
             "scenario": None,
             "step": 0,
             "max_steps": 15,
+            "max_execution_time": 60,
             "tool_calls_history": [],
             "retrieved_docs": None,
             "final_answer": None,

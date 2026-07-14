@@ -18,6 +18,8 @@
   - 异常降级（3轮以上未定位 -> 建议人工客服）
 """
 
+from smart_qa.observability.logger import logger
+
 # 错误码映射表（从 vision_agent 迁移）
 ERROR_CODE_MAP = {
     "E01": {"cause": "跌落传感器异常", "solution": "将扫地机放回平整地面，清洁底部悬崖传感器"},
@@ -29,6 +31,7 @@ ERROR_CODE_MAP = {
     "E07": {"cause": "Wi-Fi 连接失败", "solution": "检查路由器2.4G信号，长按Wi-Fi键5秒重新配网"},
     "E08": {"cause": "水箱未安装", "solution": "安装水箱支架后再使用拖地功能"},
 }
+
 
 # -- 故障排查决策树 --
 DIAGNOSIS_TREE = {
@@ -377,20 +380,23 @@ class TroubleshootScenario:
     async def run(state: dict) -> dict:
         """执行故障排查场景"""
         query = TroubleshootScenario._extract_query(state)
+        user_id = state.get("user_id", "anonymous")
+        task_memory = state.get("task_memory") or {}
+        stage = task_memory.get("diagnosis_stage", TroubleshootScenario.STAGE_INIT)
+        logger.info("故障排查场景开始 user={} stage={} query={}", user_id, stage, query[:60])
+
         if not query:
             state["final_answer"] = (
                 "请描述您的设备遇到了什么问题？比如：无法开机、清扫不干净、有错误码等，我来帮您排查。"
             )
             return state
 
-        task_memory = state.get("task_memory") or {}
-        stage = task_memory.get("diagnosis_stage", TroubleshootScenario.STAGE_INIT)
         round_num = task_memory.get("diagnosis_round", 0)
-
         error_code = TroubleshootScenario._extract_error_code(query)
 
         if error_code and error_code in ERROR_CODE_MAP:
             entry = ERROR_CODE_MAP[error_code]
+            logger.info("故障排查: 错误码匹配 code={}", error_code)
             state["final_answer"] = (
                 f"识别到错误码 {error_code}：\n"
                 f"🔍 原因：{entry['cause']}\n"

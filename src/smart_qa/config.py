@@ -52,10 +52,13 @@ class Settings(BaseSettings):
     embedding_backend: str = "local"  # local / ollama / api
     embedding_model: str = "BAAI/bge-small-zh-v1.5"  # 模型名
     embedding_base_url: str = ""  # ollama/api 服务地址
+    embedding_api_key: str = ""  # api 后端的密钥（为空则复用 llm_api_key）
 
     # ── Server ──
     host: str = "0.0.0.0"
     port: int = 8000
+    # ── CORS ──
+    cors_origins: list[str] = ["*"]  # 生产环境请指定具体域名, e.g. ["https://myapp.com"]
 
     model_config = {
         "env_file": ".env",

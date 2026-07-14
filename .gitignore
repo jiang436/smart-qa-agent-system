@@ -36,3 +36,4 @@ fix_*.py
 uploads/
 
 *.pkl
+**/reports/

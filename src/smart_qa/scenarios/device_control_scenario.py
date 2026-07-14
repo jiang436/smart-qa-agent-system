@@ -49,6 +49,8 @@ class DeviceControlScenario:
         """
         start_time = time.time()
         query = extract_user_query(state)
+        user_id = state.get("user_id", "anonymous")
+        logger.info("设备控制场景开始 user={} query={}", user_id, query[:60])
         if not query:
             state["final_answer"] = "您好！我可以帮您查看设备状态、开始清扫、设置定时等，请问需要什么？"
             return state
@@ -114,7 +116,7 @@ class DeviceControlScenario:
             state["error"] = str(e)[:200]
 
         elapsed = time.time() - start_time
-        logger.info("设备控制完成 latency={:.1f}s", elapsed)
+        logger.info("设备控制场景完成 user={} latency={:.1f}s", user_id, elapsed)
         return state
 
     # ── 命令检测 ──

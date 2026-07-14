@@ -59,6 +59,13 @@ class ReportScenario:
         """
         start_time = time.time()
         query = extract_user_query(state)
+        user_id = state.get("user_id", "anonymous")
+        logger.info(
+            "报告场景开始 user={} query={} type={}",
+            user_id,
+            query[:60],
+            cls._detect_report_type(query) if query else "?",
+        )
         if not query:
             state["final_answer"] = "您好！请问需要生成什么类型的报告？例如「生成我的使用报告」或「查看耗材状态」。"
             return state

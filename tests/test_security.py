@@ -1,5 +1,4 @@
 """安全模块测试 — SensitiveFilter + PromptInjectionDetector"""
-import pytest
 from smart_qa.security import PromptInjectionDetector, SensitiveFilter
 
 

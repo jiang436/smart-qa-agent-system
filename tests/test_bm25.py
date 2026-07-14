@@ -1,5 +1,4 @@
 """BM25 索引测试"""
-import pytest
 from smart_qa.knowledge.bm25 import BM25Index
 
 

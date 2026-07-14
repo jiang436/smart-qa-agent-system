@@ -48,12 +48,13 @@ class ConsumablesScenario:
         """
         start = time.time()
         query = ConsumablesScenario._extract_query(state)
+        user_id = state.get("user_id", "anonymous")
+        logger.info("耗材场景开始 user={} query={}", user_id, query[:60])
 
         if not query:
             state["final_answer"] = "请问您需要查询哪种耗材？或者告诉我您的设备型号，我帮您查兼容的配件。"
             return state
 
-        user_id = state.get("user_id", "anonymous")
         user_profile = state.get("user_profile", {})
         task_memory = state.get("task_memory") or {}
 
