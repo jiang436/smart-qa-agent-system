@@ -2,7 +2,7 @@
 
 > 智能家居客服场景的多 Agent 问答系统。支持知识问答、故障排查、耗材管理、设备控制、报告生成、Text2SQL 六大业务场景。
 >
-> 后端 FastAPI + LangGraph + Milvus + PostgreSQL，前端 Vue 3 (taste-skill 设计系统) + Tailwind CSS。
+> 后端 FastAPI + LangGraph + Milvus + PostgreSQL，前端 Vue 3 + Tailwind CSS。
 
 ## 架构
 
