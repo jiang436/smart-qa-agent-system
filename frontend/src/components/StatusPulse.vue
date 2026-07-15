@@ -1,20 +1,19 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useAppStore } from '@/stores/app'
+import { useChatStore } from '@/stores/chat'
 
-const app = useAppStore()
-
-const statusColor = computed(() => app.deviceOnline ? 'bg-success' : 'bg-slate-400')
-const statusLabel = computed(() => app.deviceOnline ? '在线' : '离线')
+const chat = useChatStore()
 </script>
 
 <template>
-  <div class="flex items-center gap-2">
-    <div class="pulse-ring-container">
-      <div :class="statusColor" class="w-2.5 h-2.5 rounded-full relative z-10" />
-      <div v-if="app.deviceOnline" class="pulse-ring" />
-    </div>
-    <span class="text-xs font-medium text-slate-500">{{ app.deviceModel }}</span>
-    <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">{{ statusLabel }}</span>
+  <div class="flex items-center gap-1.5">
+    <span
+      :class="[
+        'w-2 h-2 rounded-full transition-base',
+        chat.isProcessing ? 'bg-accent animate-pulse' : 'bg-emerald-400'
+      ]"
+    />
+    <span class="text-[11px] text-neutral-400 font-medium">
+      {{ chat.isProcessing ? '处理中' : '在线' }}
+    </span>
   </div>
 </template>

@@ -64,20 +64,57 @@ class OllamaEmbedding(EmbeddingBackend):
 class APIEmbedding(EmbeddingBackend):
     """远程 API 嵌入（OpenAI 兼容）"""
 
-    def __init__(self, api_key: str, base_url: str, model: str = "text-embedding-3-small", dim: int = 512):
+    def __init__(self, api_key: str, base_url: str, model: str = "text-embedding-3-small"):
         from openai import OpenAI
 
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
-        self._dim = dim
+        self._dim: int | None = None
 
     @property
     def dimension(self) -> int:
-        return self._dim
+        if self._dim is None:
+            emb = self.encode(["hello"])
+            self._dim = int(emb.shape[-1])
+        return self._dim if self._dim is not None else 1024
 
     def encode(self, texts: list[str]) -> np.ndarray:
         resp = self.client.embeddings.create(input=texts, model=self.model)
         return np.array([item.embedding for item in resp.data], dtype=np.float32)
+
+
+class FallbackEmbedding(EmbeddingBackend):
+    """兜底嵌入 — API 主路，本地降级
+
+    自动切换:
+      API 可用 → 直接用 API
+      API 超时/报错 → 自动切本地模型
+      本地也失败 → 抛异常
+    """
+
+    def __init__(self, primary: EmbeddingBackend, fallback: EmbeddingBackend):
+        self.primary = primary
+        self.fallback = fallback
+        self._using_fallback = False
+        self._dim: int | None = None
+
+    @property
+    def dimension(self) -> int:
+        if self._dim is None:
+            try:
+                self._dim = self.primary.dimension
+            except Exception:
+                self._dim = self.fallback.dimension
+        return self._dim if self._dim is not None else 1024
+
+    def encode(self, texts: list[str]) -> np.ndarray:
+        if not self._using_fallback:
+            try:
+                return self.primary.encode(texts)
+            except Exception as e:
+                logger.warning("API Embedding 不可用，降级本地模型: {}", e)
+                self._using_fallback = True
+        return self.fallback.encode(texts)
 
 
 def create_embedding_backend(
@@ -85,11 +122,20 @@ def create_embedding_backend(
     model: str = "BAAI/bge-small-zh-v1.5",
     api_key: str = "",
     base_url: str = "",
+    fallback_model: str = "",
 ) -> EmbeddingBackend:
-    """工厂函数: 根据配置创建 EmbeddingBackend 实例"""
+    """工厂函数: 根据配置创建 EmbeddingBackend 实例
+
+    支持 "api" + fallback_model → API 主路 + 本地兜底
+    """
     if backend == "ollama":
         return OllamaEmbedding(model=model, base_url=base_url or "http://localhost:11434")
     elif backend == "api":
-        return APIEmbedding(api_key=api_key, base_url=base_url, model=model)
+        primary = APIEmbedding(api_key=api_key, base_url=base_url, model=model)
+        if fallback_model:
+            fallback = LocalEmbedding(model_name=fallback_model)
+            logger.info("Embedding: API({})+本地({}) 兜底模式", model, fallback_model)
+            return FallbackEmbedding(primary, fallback)
+        return primary
     else:
         return LocalEmbedding(model_name=model)

@@ -67,9 +67,9 @@ class ReportScenario:
         report_type = cls._detect_report_type(query)
 
         try:
-            from smart_qa.deps import get_llm_client
+            from smart_qa.di import container
 
-            agent = cls._get_agent(llm_client=get_llm_client())
+            agent = cls._get_agent(llm_client=container.get("llm"))
             # 注入报告类型到 task_memory
             task = state.get("task_memory") or {}
             task["report_type"] = report_type

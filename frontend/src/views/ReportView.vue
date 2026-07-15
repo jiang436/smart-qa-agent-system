@@ -2,9 +2,8 @@
 import { ref } from 'vue'
 
 const period = ref<'monthly' | 'weekly'>('monthly')
-const loading = ref(false)
 
-const mockStats = {
+const stats = {
   total_cleans: 28,
   total_area: 1240.5,
   total_duration: 1024,
@@ -19,101 +18,80 @@ const consumables = [
   { name: '拖布', remaining: 8, total: 60, status: 'danger' },
 ]
 
-const statusColors: Record<string, string> = {
-  good: 'bg-success',
-  warning: 'bg-amber-400',
-  danger: 'bg-danger',
-}
-
-const statusLabels: Record<string, string> = {
-  good: '正常',
-  warning: '即将到期',
-  danger: '建议更换',
+const statusConfig: Record<string, { bar: string; badge: string; label: string }> = {
+  good: { bar: 'bg-emerald-400', badge: 'bg-emerald-50 text-emerald-600', label: '正常' },
+  warning: { bar: 'bg-amber-400', badge: 'bg-amber-50 text-amber-600', label: '即将到期' },
+  danger: { bar: 'bg-red-400', badge: 'bg-red-50 text-red-600', label: '建议更换' },
 }
 </script>
 
 <template>
   <div class="flex flex-col h-full">
-    <header class="flex items-center justify-between px-5 py-3 bg-white border-b border-slate-200 shrink-0">
+    <header class="flex items-center justify-between px-6 py-3 bg-surface border-b border-neutral-200 shrink-0">
       <div>
-        <h1 class="text-sm font-semibold text-slate-800">使用报告</h1>
-        <p class="text-[11px] text-slate-400">X30 Pro · 最近30天</p>
+        <h1 class="text-sm font-semibold text-neutral-800">使用报告</h1>
+        <p class="text-[11px] text-neutral-400 mt-0.5">X30 Pro - 最近30天</p>
       </div>
-      <div class="flex gap-1 bg-bg-secondary rounded-md p-0.5">
+      <div class="flex gap-0.5 bg-bg-secondary rounded-lg p-0.5">
         <button
           v-for="p in [{ key: 'weekly', label: '周报' }, { key: 'monthly', label: '月报' }]"
           :key="p.key"
           @click="period = p.key as any"
           :class="[
-            'px-3 py-1 text-xs rounded transition-colors',
-            period === p.key ? 'bg-white text-accent shadow-e1' : 'text-slate-500'
+            'px-3.5 py-1.5 text-xs font-medium rounded-md transition-base',
+            period === p.key ? 'bg-surface text-accent shadow-e1' : 'text-neutral-500 hover:text-neutral-700'
           ]"
         >{{ p.label }}</button>
       </div>
     </header>
 
-    <div class="flex-1 overflow-y-auto p-5 space-y-5">
-      <!-- Stats -->
+    <div class="flex-1 overflow-y-auto p-6 space-y-5">
       <div class="grid grid-cols-4 gap-3">
-        <div class="bg-white rounded-lg border border-slate-200 p-4 text-center">
-          <div class="text-2xl font-bold text-slate-800">{{ mockStats.total_cleans }}</div>
-          <div class="text-[11px] text-slate-400 mt-1">清扫次数</div>
-        </div>
-        <div class="bg-white rounded-lg border border-slate-200 p-4 text-center">
-          <div class="text-2xl font-bold text-slate-800">{{ mockStats.total_area }}<span class="text-sm font-normal text-slate-400">m²</span></div>
-          <div class="text-[11px] text-slate-400 mt-1">清扫面积</div>
-        </div>
-        <div class="bg-white rounded-lg border border-slate-200 p-4 text-center">
-          <div class="text-2xl font-bold text-slate-800">{{ mockStats.total_duration }}<span class="text-sm font-normal text-slate-400">min</span></div>
-          <div class="text-[11px] text-slate-400 mt-1">累计时长</div>
-        </div>
-        <div class="bg-white rounded-lg border border-slate-200 p-4 text-center">
-          <div class="text-2xl font-bold text-slate-800">{{ mockStats.error_count }}<span class="text-sm font-normal text-slate-400">次</span></div>
-          <div class="text-[11px] text-slate-400 mt-1">异常事件</div>
+        <div v-for="stat in [
+          { val: stats.total_cleans, unit: '', label: '清扫次数' },
+          { val: stats.total_area, unit: 'm²', label: '清扫面积' },
+          { val: stats.total_duration, unit: 'min', label: '累计时长' },
+          { val: stats.error_count, unit: '次', label: '异常事件' },
+        ]" :key="stat.label" class="bg-surface border border-neutral-200 rounded-xl p-5 text-center">
+          <div class="text-2xl font-bold text-neutral-800">
+            {{ stat.val }}<span class="text-sm font-normal text-neutral-400 ml-1">{{ stat.unit }}</span>
+          </div>
+          <div class="text-[11px] text-neutral-400 mt-1.5">{{ stat.label }}</div>
         </div>
       </div>
 
-      <!-- Consumable status -->
-      <div class="bg-white rounded-lg border border-slate-200 p-5">
-        <h3 class="text-sm font-semibold text-slate-800 mb-4">耗材状态</h3>
-        <div class="space-y-3">
-          <div v-for="c in consumables" :key="c.name" class="flex items-center gap-3">
-            <span class="text-xs text-slate-600 w-16 shrink-0">{{ c.name }}</span>
-            <div class="flex-1 h-2 bg-slate-100 rounded-full">
+      <div class="bg-surface border border-neutral-200 rounded-xl p-6">
+        <h3 class="text-sm font-semibold text-neutral-800 mb-5">耗材状态</h3>
+        <div class="space-y-4">
+          <div v-for="c in consumables" :key="c.name" class="flex items-center gap-4">
+            <span class="text-xs text-neutral-600 w-20 shrink-0">{{ c.name }}</span>
+            <div class="flex-1 h-2 bg-neutral-100 rounded-full overflow-hidden">
               <div
-                :class="statusColors[c.status]"
-                class="h-full rounded-full transition-all"
+                :class="statusConfig[c.status].bar"
+                class="h-full rounded-full transition-base"
                 :style="{ width: `${(c.remaining / c.total) * 100}%` }"
               />
             </div>
-            <span class="text-[11px] text-slate-400 w-16 text-right">{{ c.remaining }}/{{ c.total }}天</span>
-            <span
-              :class="[
-                'text-[10px] px-1.5 py-0.5 rounded-full',
-                c.status === 'good' ? 'bg-emerald-50 text-emerald-600' :
-                c.status === 'warning' ? 'bg-amber-50 text-amber-600' :
-                'bg-red-50 text-red-600'
-              ]"
-            >{{ statusLabels[c.status] }}</span>
+            <span class="text-[11px] text-neutral-400 w-20 text-right font-mono">{{ c.remaining }}/{{ c.total }}天</span>
+            <span :class="statusConfig[c.status].badge" class="text-[10px] px-1.5 py-0.5 rounded-md font-medium">{{ statusConfig[c.status].label }}</span>
           </div>
         </div>
       </div>
 
-      <!-- Recommendations -->
-      <div class="bg-white rounded-lg border border-slate-200 p-5">
-        <h3 class="text-sm font-semibold text-slate-800 mb-3">优化建议</h3>
-        <ul class="space-y-2 text-sm text-slate-600">
-          <li class="flex items-start gap-2">
-            <span class="text-accent mt-0.5">•</span>
-            您的平均清扫面积 44.3m²，适合当前使用频率，建议保持每天清扫的习惯
+      <div class="bg-surface border border-neutral-200 rounded-xl p-6">
+        <h3 class="text-sm font-semibold text-neutral-800 mb-4">优化建议</h3>
+        <ul class="space-y-2.5 text-sm text-neutral-600 leading-relaxed">
+          <li class="flex items-start gap-2.5">
+            <span class="w-1.5 h-1.5 rounded-full bg-accent mt-2 shrink-0" />
+            平均清扫面积 44.3m²，适合当前使用频率，建议保持每天清扫。
           </li>
-          <li class="flex items-start gap-2">
-            <span class="text-amber-500 mt-0.5">•</span>
-            HEPA滤网和拖布即将到期，建议提前购买备件
+          <li class="flex items-start gap-2.5">
+            <span class="w-1.5 h-1.5 rounded-full bg-amber-400 mt-2 shrink-0" />
+            HEPA滤网和拖布即将到期，建议提前购买备件。
           </li>
-          <li class="flex items-start gap-2">
-            <span class="text-accent mt-0.5">•</span>
-            出现过 3 次异常事件，建议检查设备轮子和边刷是否有缠绕物
+          <li class="flex items-start gap-2.5">
+            <span class="w-1.5 h-1.5 rounded-full bg-accent mt-2 shrink-0" />
+            出现过 3 次异常事件，建议检查设备轮子和边刷是否有缠绕物。
           </li>
         </ul>
       </div>

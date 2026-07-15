@@ -15,164 +15,32 @@ Usage:
     # result["confidence"]: "high" | "medium" | "low"
 """
 
+import asyncio
+import hashlib
+import json
+import os
 import re
 
+from smart_qa.config import settings
+from smart_qa.di import container
+from smart_qa.exceptions import BM25Error, RetrievalError, VectorStoreError
 from smart_qa.knowledge.bm25 import BM25Index
 from smart_qa.knowledge.vector_store import get_embedding
 from smart_qa.observability.logger import logger
+from smart_qa.rag.hyde import HyDE
 from smart_qa.rag.reranker import Reranker
+from smart_qa.rag.retrieval_utils import (
+    STOP_WORDS,
+    collect_knowledge_texts,
+    load_knowledge_bm25,
+    register_bm25,
+)
 
-# ── 停用词 ──
-_STOP_WORDS: set[str] = {
-    "的",
-    "了",
-    "是",
-    "在",
-    "我",
-    "有",
-    "和",
-    "就",
-    "不",
-    "人",
-    "都",
-    "一",
-    "一个",
-    "上",
-    "也",
-    "很",
-    "到",
-    "说",
-    "要",
-    "去",
-    "你",
-    "会",
-    "着",
-    "没有",
-    "看",
-    "好",
-    "自己",
-    "这",
-    "他",
-    "她",
-    "它",
-    "们",
-    "那",
-    "些",
-    "什么",
-    "怎么",
-    "如何",
-    "为什么",
-    "吗",
-    "呢",
-    "吧",
-    "啊",
-    "哦",
-    "嗯",
-}
-
-
-# 全局共享 BM25 + 预计算向量
-_shared_bm25 = None
-_doc_vectors = None  # 预计算的文档向量 (N x 512)
-
-
-def set_shared_bm25(bm25):
-    global _shared_bm25
-    _shared_bm25 = bm25
-
-
-def _collect_knowledge_texts() -> list[str]:
-    """收集所有可索引知识文本 — 和 Milvus 使用完全相同的数据源
-
-    来源:
-      1. data/knowledge/ 下的 md/txt/pdf（DocumentParser + SmartDocumentSplitter）
-      2. FAQ JSON 文件
-      3. 内置默认知识（目录为空时兜底）
-    """
-    import json
-    import os
-
-    from smart_qa.knowledge.document_parser import DocumentParser
-    from smart_qa.rag.chunking import SmartDocumentSplitter
-
-    parser = DocumentParser()
-    splitter = SmartDocumentSplitter(chunk_size=500, chunk_overlap=50)
-    texts: list[str] = []
-
-    # ── 1. data/knowledge/ 目录 ──
-    if os.path.isdir("data/knowledge"):
-        for root, _dirs, files in os.walk("data/knowledge"):
-            for f in sorted(files):
-                filepath = os.path.join(root, f)
-                if not DocumentParser.is_supported(filepath):
-                    continue
-                try:
-                    content = parser.extract_text(filepath)
-                except Exception:
-                    continue
-                if not content.strip():
-                    continue
-                doc_type = SmartDocumentSplitter.detect_type(f, content)
-                chunks = splitter.split(content, doc_type, {"source": f})
-                for c in chunks:
-                    txt = c.get("content", "").strip()
-                    if len(txt) > 20:
-                        texts.append(txt)
-
-    # ── 2. FAQ JSON ──
-    for faq_file in [
-        "data/faq_knowledge_base.json",
-        "data/faq_consumables.json",
-        "data/faq_troubleshooting.json",
-    ]:
-        try:
-            with open(faq_file, encoding="utf-8") as fh:
-                faq_data = json.load(fh)
-        except Exception:
-            continue
-        entries = faq_data if isinstance(faq_data, list) else faq_data.get("entries", [])
-        for entry in entries:
-            q = entry.get("question", "")
-            a = entry.get("answer", "")
-            if q and a and len(q + a) > 30:
-                texts.append(f"问：{q}\n答：{a}")
-
-    # ── 3. 默认知识（目录为空时兜底） ──
-    if not texts:
-        try:
-            from smart_qa.scripts.init_vector_store import DEFAULT_KNOWLEDGE
-
-            for category, content in DEFAULT_KNOWLEDGE.items():
-                doc_type = SmartDocumentSplitter.detect_type(f"builtin/{category}.md", content)
-                chunks = splitter.split(content, doc_type, {"source": f"builtin/{category}.md"})
-                for c in chunks:
-                    texts.append(c.get("content", ""))
-        except ImportError:
-            pass
-
-    return texts
-
-
-def _load_knowledge_bm25():
-    """懒加载: 首次调用时构建 BM25 + 预计算 BGE 向量
-
-    和 Milvus 使用完全相同的文档源 + 分块策略，
-    确保两个索引的知识覆盖一致。
-    """
-    global _shared_bm25, _doc_vectors
-    if _shared_bm25 is not None:
-        return _shared_bm25
-
-    bm = BM25Index()
-    docs = _collect_knowledge_texts()
-    if docs:
-        bm.build(docs)
-        _shared_bm25 = bm
-        # 预计算所有文档的 BGE 向量（用于 L3 BM25 召回后的语义重排）
-        emb = get_embedding()
-        _doc_vectors = emb.encode(docs)
-        logger.info("知识库 BM25 加载完成 docs={} vectors_shape={}", len(docs), _doc_vectors.shape)
-    return _shared_bm25
+# ── 向后兼容别名 ──
+_STOP_WORDS = STOP_WORDS
+set_shared_bm25 = register_bm25
+_load_knowledge_bm25 = load_knowledge_bm25
+_collect_knowledge_texts = collect_knowledge_texts
 
 
 class MultiLayerRetriever:
@@ -189,42 +57,104 @@ class MultiLayerRetriever:
         self.llm = llm_client
         self.bm25 = bm25_index or _load_knowledge_bm25() or BM25Index()
         self._bm25_built = self.bm25.doc_count > 0
-        self.reranker = Reranker()
+        from smart_qa.config import settings
+
+        self.reranker = Reranker(
+            llm_client=llm_client,
+            backend=settings.reranker_backend,
+            model_name=settings.reranker_model_path or "BAAI/bge-reranker-v2-m3",
+        )
+        self.hyde = HyDE(llm_client=llm_client)
 
     # ── 主入口 ──
 
-    def retrieve(self, query: str, top_k: int = 10, mode: str = "cascade") -> dict:
-        """检索主入口（带 Reranker 重排序）
-
-        Args:
-            query: 用户问题
-            top_k: 返回文档数（reranker 从更多候选中精选）
-            mode: "cascade" (串行降级) | "parallel" (并行+RRF融合)
+    def retrieve(self, query: str, top_k: int = 10, mode: str = "parallel") -> dict:
+        """检索主入口（带 Self-Query 元数据过滤 + Reranker 重排序）
 
         流程:
-          1. 内部先取更多文档 (top_k * 3, 至少 20) 保证召回率
-          2. Reranker Cross-Encoder 精确打分
-          3. 返回精选的 top_k 条
+          1. LLM 解析 query → 提取元数据过滤条件（Self-Query）
+          2. 内部先取更多文档 (top_k * 3, 至少 20) 保证召回率
+          3. 元数据过滤 → 语义空间收窄
+          4. Reranker 精确打分 → 精选 top_k
+          5. 句子窗口展开 → 拼接上下文
         """
+        # ── 短路: 短查询 / 纯命令 → 跳过 LLM 耗时步骤 ──
+        is_short = len(query) <= 5 or (
+            len(query) <= 8 and not any(kw in query for kw in ["怎么", "如何", "什么", "为什么"])
+        )
+
+        # 0. Self-Query: 仅长查询启用
+        meta_filter = self._parse_metadata_filter(query) if (self.llm and not is_short) else {}
+
+        # HyDE: 仅中长查询启用（短查询 embedding 已足够精确）
+        hyde_text = self.hyde.generate(query) if (self.llm and not is_short) else None
+        semantic_query = hyde_text if hyde_text else query
+
         # 内部多取一些, 供 reranker 精选
         retrieve_k = max(top_k * 3, 20)
 
+        # 0.5 Multi-Query: 仅复杂/长查询启用
+        sub_queries = self._decompose_query(query) if (self.llm and len(query) > 15) else []
+        if sub_queries:
+            all_docs = []
+            for sq in sub_queries:
+                sub_result = self._parallel_retrieve(sq, sq, max(5, top_k))
+                all_docs.extend(sub_result.get("docs", []))
+            # 去重合并
+            merged = self._dedup_and_sort(all_docs)[:top_k * 3]
+            if merged:
+                result = self._build(merged, "multi_query", "high", query,
+                                     f"拆分为 {len(sub_queries)} 个子问题, 合并 {len(merged)} 条")
+                logger.info("Multi-Query: {} → {} sub-queries, merged {} docs",
+                             query[:60], len(sub_queries), len(merged))
+                return self._post_process(result, query, top_k, retrieve_k, meta_filter)
+            else:
+                sub_queries = []  # 合并无结果 → 降级走正常检索
+
         if mode == "parallel":
-            result = self._parallel_retrieve(query, retrieve_k)
+            result = self._parallel_retrieve(query, semantic_query, retrieve_k)
         else:
-            result = self._cascade_retrieve(query, retrieve_k)
+            result = self._cascade_retrieve(query, semantic_query, retrieve_k)
+
+        return self._post_process(result, query, top_k, retrieve_k, meta_filter)
+
+    def _post_process(self, result, query, top_k, retrieve_k, meta_filter):
+        """检索后处理: 元数据过滤 → ReRank → 窗口展开"""
+        # 元数据过滤（Self-Query）
+        docs = result.get("docs", [])
+        if meta_filter and docs:
+            before = len(docs)
+            docs = self._apply_metadata_filter(docs, meta_filter)
+            if docs:
+                result["docs"] = docs
+                result["total"] = len(docs)
+                result["note"] = (result.get("note", "") + f" | MetaFilter {len(docs)}/{before}").strip()
+                logger.info("元数据过滤: {} → {} docs filter={}", before, len(docs), meta_filter)
 
         # Reranker 重排序
-        docs = result.get("docs", [])
         if len(docs) > top_k and self.reranker:
             docs = self.reranker.rerank(query, docs, top_k=top_k)
             result["docs"] = docs
             result["total"] = len(docs)
             result["note"] = (result.get("note", "") + f" | Reranker {len(docs)}/{retrieve_k}").lstrip(" |").strip()
 
+        # 句子窗口展开
+        docs = result.get("docs", [])
+        if docs:
+            expanded = self._expand_context_window(docs)
+            result["docs"] = expanded
+
         return result
 
-    def _cascade_retrieve(self, query: str, top_k: int) -> dict:
+    async def retrieve_async(self, query: str, top_k: int = 10, mode: str = "parallel") -> dict:
+        """异步检索 — 在线程池中执行同步检索，避免阻塞事件循环
+
+        用于 async 上下文中调用（如 RAGAgent.retrieve_and_generate）。
+        底层 LLM 调用通过 asyncio.to_thread 在线程池执行。
+        """
+        return await asyncio.to_thread(self.retrieve, query, top_k, mode)
+
+    def _cascade_retrieve(self, query: str, hyde_query: str = "", top_k: int = 10) -> dict:
         """四层召回，逐层降级
 
         Returns:
@@ -237,14 +167,17 @@ class MultiLayerRetriever:
                 "total": int,
             }
         """
-        # ═══ L1: 语义检索 ═══
-        logger.info("L1 语义检索 query={}", query[:80])
-        docs = self._semantic_search(query, top_k)
+        # ═══ L1: 语义检索（HyDE 优先）═══
+        search_query = hyde_query if hyde_query else query
+        source_tag = "L1_semantic" if search_query == query else "L1_semantic+hyde"
+        logger.info("L1 语义检索 hyde={} query={}", hyde_query != "", search_query[:60])
+        docs = self._semantic_search(search_query, top_k)
 
         if len(docs) >= self.L1_MIN_HITS and self._avg_score(docs) >= self.L1_THRESHOLD:
             logger.info("L1 命中 hits={} avg_score={:.3f}", len(docs), self._avg_score(docs))
             return self._build(
-                docs, "L1_semantic", "high", query, f"语义检索命中 {len(docs)} 条, 平均分 {self._avg_score(docs):.2f}"
+                docs, source_tag, "high", query,
+                f"{'HyDE' if hyde_query else '语义'}检索命中 {len(docs)} 条, 平均分 {self._avg_score(docs):.2f}"
             )
 
         # ═══ L2: Query 改写 + Expansion ═══
@@ -298,7 +231,7 @@ class MultiLayerRetriever:
 
     def _semantic_search(self, query: str, top_k: int) -> list[dict]:
         """向量检索: Milvus → 预计算 BGE 向量 → 空"""
-        global _doc_vectors
+        doc_vectors = container.get_optional("doc_vectors")
         # 优先 Milvus
         if self.milvus:
             try:
@@ -306,7 +239,7 @@ class MultiLayerRetriever:
                 results = self.milvus.search(
                     data=[query_vec.tolist()],
                     anns_field="vector",
-                    param={"metric_type": "IP", "params": {"nprobe": 10}},
+                    param={"metric_type": "COSINE", "params": {"ef": 128}},
                     limit=top_k,
                     output_fields=["content", "source"],
                 )
@@ -324,13 +257,13 @@ class MultiLayerRetriever:
                 logger.warning("Milvus 检索异常: {}", e)
 
         # 降级: 预计算 BGE 向量做语义检索
-        if self._bm25_built and _doc_vectors is not None and self.bm25.doc_count > 0:
+        if self._bm25_built and doc_vectors is not None and self.bm25.doc_count > 0:
             import numpy as _np
 
             query_vec = self.embedding.encode(query).ravel()  # (512,)
             # 矩阵乘法一次完成
-            sims = _np.dot(_doc_vectors, query_vec) / (
-                _np.linalg.norm(_doc_vectors, axis=1) * _np.linalg.norm(query_vec) + 1e-10
+            sims = _np.dot(doc_vectors, query_vec) / (
+                _np.linalg.norm(doc_vectors, axis=1) * _np.linalg.norm(query_vec) + 1e-10
             )
             top_idx = _np.argsort(sims)[-top_k:][::-1]
             docs = []
@@ -399,10 +332,47 @@ class MultiLayerRetriever:
         }
         expanded_parts = [query]
         for key, exp in expansions.items():
-            if key in query and key not in str(expanded_parts):
+            if key in query and exp not in expanded_parts:
                 expanded_parts.append(exp)
         result = " ".join(expanded_parts)
         return result if result != query else None
+
+    # ── Multi-Query: 复杂问题拆子问题 ──
+
+    def _decompose_query(self, query: str) -> list[str]:
+        """LLM 拆分复杂问题为多个简单子问题，分别检索后合并去重
+
+        例:
+          "X30 Pro和T10的边刷通用吗？分别多久换一次？"
+          → ["X30 Pro边刷更换周期", "T10边刷更换周期", "X30 Pro与T10边刷兼容性"]
+        """
+        if not self.llm or len(query) < 15:
+            return []
+
+        prompt = (
+            "判断用户问题是否包含多个子问题或对比多个事物。\n"
+            "如果只有单个问题，输出 NONE。\n"
+            "如果有多个子问题，拆分为独立的检索查询（每行一个），每个查询简洁明了，适合做关键词检索。\n\n"
+            "规则:\n"
+            "1. 保持原意，用正式术语（如'不走了'→'停止工作'）\n"
+            "2. 涉及对比时，各方分别生成独立查询\n"
+            "3. 最多拆成 4 个，每个不超过 30 字\n"
+            "4. 先判断是否为多问题，单问题直接输出 NONE\n\n"
+            f"用户问题: {query}\n"
+            "输出（NONE 或每行一个子查询）:"
+        )
+        try:
+            resp = self.llm.invoke(prompt)
+            text = resp.content if hasattr(resp, "content") else str(resp)
+            text = text.strip()
+            if "NONE" in text.upper() or not text:
+                return []
+            subs = [line.strip().lstrip("-0123456789. ").strip() for line in text.split("\n") if line.strip()]
+            subs = [s for s in subs if len(s) > 3 and s != query]
+            return subs[:4] if len(subs) > 1 else []
+        except Exception as e:
+            logger.debug("Multi-Query 分解失败: {}", e)
+            return []
 
     # ── L3: BM25 关键词 ──
 
@@ -422,7 +392,7 @@ class MultiLayerRetriever:
             # 简单切分: 按停用词边界拆
             words = re.findall(r"[一-鿿]+|[A-Za-z\d]+", query)
 
-        keywords = [w for w in words if len(w) > 1 and w not in _STOP_WORDS]
+        keywords = [w for w in words if len(w) > 1 and w not in STOP_WORDS]
         return specials + keywords
 
     # ── 辅助方法 ──
@@ -431,7 +401,7 @@ class MultiLayerRetriever:
         """计算文档列表的平均分"""
         if not docs:
             return 0.0
-        return sum(d.get("score", 0) for d in docs) / len(docs)
+        return sum(d.get("score") or 0 for d in docs) / len(docs)
 
     def _dedup_and_sort(self, docs: list[dict]) -> list[dict]:
         """去重并按分数降序排列"""
@@ -446,27 +416,21 @@ class MultiLayerRetriever:
 
     # ── 并行检索 + RRF 融合 ──
 
-    def _parallel_retrieve(self, query: str, top_k: int) -> dict:
-        """并行检索 + RRF 融合排序
+    def _parallel_retrieve(self, query: str, hyde_query: str = "", top_k: int = 10) -> dict:
+        """并行检索 + RRF 融合排序（HyDE 增强语义检索）
 
         流程:
-          1. Query 改写 (LLM)
-          2. 并行: 语义检索 (top_k=5) + BM25 关键词 (top_k=5)
-          3. RRF (Reciprocal Rank Fusion) 融合排序
-          4. 取最终 top_k
-
-        RRF 公式:
-          score(d) = Σ 1/(k + rank_i(d))
-          其中 k=60 (经典配置), rank_i 是文档在第 i 路检索中的排名
+          1. HyDE 生成假设答案（可选）→ 替代 query 做语义检索
+          2. 并行: 语义检索 + BM25 关键词
+          3. RRF 融合排序
         """
-        logger.info("并行检索+RRF融合 query={}", query[:80])
+        hyde_used = hyde_query and hyde_query != query
+        logger.info("并行检索+RRF融合 query={} hyde={}", query[:60], hyde_used)
 
-        # 1. Query 改写
-        rewritten = self._rewrite_query(query) if self.llm else None
-        search_query = rewritten or query
+        # 语义检索用 HyDE 向量，BM25 用原始 query（保留精确匹配）
+        semantic_query = hyde_query if hyde_query else query
 
-        # 2. 并行检索
-        semantic_docs = self._semantic_search(search_query, top_k=10)
+        semantic_docs = self._semantic_search(semantic_query, top_k=10)
         bm25_docs = self.bm25.search(query, top_k=10) if self._bm25_built else []
 
         logger.info("并行检索 semantic={} bm25={}", len(semantic_docs), len(bm25_docs))
@@ -483,7 +447,7 @@ class MultiLayerRetriever:
                 fused,
                 "RRF_fusion",
                 "high",
-                search_query,
+                query,
                 f"RRF 融合 semantic({len(semantic_docs)}) + BM25({len(bm25_docs)}) → top_{len(fused)}",
             )
 
@@ -525,9 +489,10 @@ class MultiLayerRetriever:
             if not lst:
                 continue
             for rank, doc in enumerate(lst, start=1):
-                # 用 content 前 200 字符作为去重 key
+                # 用 content 前 300 字符的 MD5 作为去重 key，避免 hash randomization 和长文档误判
                 content = doc.get("content", "")
-                key = content[:200].strip()
+                content_key = content[:300].strip()
+                key = hashlib.md5(content_key.encode("utf-8")).hexdigest() if content_key else str(id(doc))
 
                 rrf_score = 1.0 / (k + rank)
 
@@ -563,6 +528,137 @@ class MultiLayerRetriever:
         """构建 BM25 倒排索引"""
         self.bm25.build(documents)
         self._bm25_built = True
+
+    def _expand_context_window(self, docs: list[dict], window: int = 1) -> list[dict]:
+        """句子窗口展开 — 每个检索到的 chunk 拼接前后相邻 chunk
+
+        原理（来自 Datawhale RAG 指南 §3.5）：
+          检索用单句精确匹配 → 展开为上下文窗口 → 给 LLM 完整语境
+          解决"搜到了但缺上下文"的问题。
+        """
+        if not self._bm25_built or not self.bm25.documents:
+            return docs
+
+        expanded = []
+        for doc in docs:
+            chunk_idx = doc.get("chunk_index")
+            source = doc.get("source", "")
+            if chunk_idx is None or source is None:
+                expanded.append(doc)
+                continue
+
+            # 找同来源相邻 chunk
+            neighbor_contents = []
+            for offset in range(-window, window + 1):
+                if offset == 0:
+                    continue
+                neighbor_idx = chunk_idx + offset
+                if neighbor_idx < 0 or neighbor_idx >= len(self.bm25.documents):
+                    continue
+                # 通过 BM25 的 documents 列表按索引取（同次构建顺序与 chunk_index 一致）
+                neighbor_doc = self.bm25.documents[neighbor_idx]
+                if neighbor_doc and len(neighbor_doc) > 20:
+                    neighbor_contents.append(neighbor_doc[:300])
+
+            if neighbor_contents:
+                new_doc = dict(doc)
+                original = doc.get("content", "")
+                # 前文 + 原文 + 后文
+                prefix = "\n[上文]\n" + "\n".join(
+                    neighbor_contents[:window]) if window > 0 else ""
+                suffix = "\n[下文]\n" + "\n".join(
+                    neighbor_contents[window:]) if len(neighbor_contents) > window else ""
+                new_doc["content"] = prefix + "\n" + original + suffix
+                new_doc["window_expanded"] = True
+                expanded.append(new_doc)
+            else:
+                expanded.append(doc)
+
+        return expanded
+
+    # ── Self-Query: 元数据过滤 ──
+
+    def _parse_metadata_filter(self, query: str) -> dict:
+        """LLM 解析自然语言查询 → 提取元数据过滤条件
+
+        例如:
+          "X30 Pro的耗材怎么换" → {"header": "X30 Pro"}
+          "故障E03怎么处理"     → {"category": "fault", "header": "E03"}
+          "滤网多久换一次"      → {"header": "滤网"}    （header 模糊匹配）
+
+        Returns:
+            {"category": "fault", "header": "E03", "source": "xxx.md"}
+            空 dict 表示不过滤
+        """
+        if not self.llm:
+            return {}
+
+        prompt = (
+            "从用户问题中提取精确的检索过滤条件。只输出 JSON。\n\n"
+            "可用过滤字段:\n"
+            "  - category: \"consumables\"(耗材) / \"fault\"(故障) / \"manual\"(手册)\n"
+            "  - header: 章节标题关键词，如\"X30 Pro\"、\"E03\"、\"边刷\"、\"滤网\"\n"
+            "  - source: 文档文件名关键词\n\n"
+            "规则:\n"
+            "1. 只提取问题中明确提到的，不要猜测\n"
+            "2. header 用短关键词（如\"边刷\"而非\"边刷怎么换\"）\n"
+            "3. 如果没有明确过滤条件，输出 {}\n\n"
+            f"用户问题: {query}\n"
+            "JSON:"
+        )
+        try:
+            resp = self.llm.invoke(prompt)
+            text = resp.content if hasattr(resp, "content") else str(resp)
+
+            json_match = re.search(r"\{[^{}]*\}", text)
+            if json_match:
+                return json.loads(json_match.group(0))
+        except Exception as e:
+            logger.debug("Self-Query 解析失败: {}", e)
+        return {}
+
+    def _apply_metadata_filter(self, docs: list[dict], meta_filter: dict) -> list[dict]:
+        """对检索结果应用元数据过滤——宽松匹配，不满足的排到后面而不是删除
+
+        策略: 命中的加分保持原位，未命中的降权但不丢弃（避免空结果）
+        """
+        if not meta_filter or not docs:
+            return docs
+
+        scored = []
+        for doc in docs:
+            bonus = 0.0
+            doc_header = str(doc.get("header", "") or doc.get("section", ""))
+            doc_category = str(doc.get("category", "") or "")
+            doc_source = str(doc.get("source", "") or "")
+            doc_content = str(doc.get("content", ""))
+
+            # category 精确匹配
+            if "category" in meta_filter:
+                if meta_filter["category"] in doc_category:
+                    bonus += 0.3
+                elif meta_filter["category"] in doc_content:
+                    bonus += 0.15
+
+            # header 关键词匹配（模糊）
+            if "header" in meta_filter:
+                keyword = str(meta_filter["header"]).lower()
+                if keyword in doc_header.lower():
+                    bonus += 0.3
+                elif keyword in doc_content.lower():
+                    bonus += 0.1
+
+            # source 匹配
+            if "source" in meta_filter:
+                if str(meta_filter["source"]).lower() in doc_source.lower():
+                    bonus += 0.2
+
+            doc["_meta_bonus"] = bonus
+            scored.append(doc)
+
+        # 按 bonus 降序：有元数据加分的排前面，没有的不删除
+        scored.sort(key=lambda d: d.get("_meta_bonus", 0), reverse=True)
+        return scored
 
     def _build(self, docs, source, confidence, query_used, note):
         return {

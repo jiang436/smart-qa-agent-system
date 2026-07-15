@@ -1,45 +1,53 @@
-"""核心依赖 — FastAPI Depends() 依赖注入
+"""核心依赖访问器 — 统一通过 DI 容器管理
 
-集中管理所有可注入的依赖，避免路由中直接实例化组件。
+所有依赖优先从 smart_qa.di.container 获取（由 web.py lifespan 注册），
+若容器中不存在则直接构建（兼容测试环境和 CLI 场景）。
 
-提供的依赖:
-  - get_llm_client()    → ChatOpenAI (DeepSeek 兼容)
-  - get_db()            → AsyncSession (在 core/database.py 中定义)
-  - get_rate_limiter()  → RateLimiter 单例
-  - get_security()      → SensitiveFilter 单例
-  - get_agent_graph()   → 编译后的 LangGraph 图
+依赖注册清单（见 web.py lifespan）:
+  - "llm"              → ChatOpenAI 客户端（工厂懒加载）
+  - "agent_graph"      → 编译后的 LangGraph StateGraph（工厂懒加载）
+  - "rate_limiter"     → RateLimiter 实例
+  - "security"         → SensitiveFilter 实例
+  - "bm25"             → BM25Index 实例
+  - "knowledge_graph"  → KnowledgeGraph 实例
+  - "store"            → LangGraph Store 实例
 
 Usage:
-    from smart_qa.deps import get_rate_limiter, get_security
+    from smart_qa.deps import get_llm_client, get_security
+    from smart_qa.di import container
 
-    @router.post("/chat")
-    async def chat(
-        req: ChatRequest,
-        limiter: RateLimiter = Depends(get_rate_limiter),
-        security: SensitiveFilter = Depends(get_security),
-    ):
-        ...
+    # FastAPI 路由注入
+    limiter: RateLimiter = Depends(get_rate_limiter)
+
+    # 业务代码
+    llm = get_llm_client()
+    bm25 = container.get("bm25")
 """
 
+from __future__ import annotations
+
 from functools import lru_cache
+from typing import TYPE_CHECKING
+
+from langchain_openai import ChatOpenAI
 
 from smart_qa.config import settings
+from smart_qa.di import container
 from smart_qa.security import RateLimiter, SensitiveFilter
 
+if TYPE_CHECKING:
+    from langgraph.graph.state import CompiledStateGraph
+
+
 # ═══════════════════════════════════════════
-# LLM Client
+# LLM 客户端
 # ═══════════════════════════════════════════
 
 
-@lru_cache
-def get_llm_client():
-    """获取 LLM 客户端 (DeepSeek via OpenAI-compatible API)
-
-    单例 + 懒加载，首次调用时初始化。
-    DeepSeek API 兼容 OpenAI SDK，直接用 ChatOpenAI。
-    """
-    from langchain_openai import ChatOpenAI
-
+def _build_llm_client() -> ChatOpenAI:
+    """直接构建 LLM 客户端（回退用）"""
+    if not settings.llm_api_key:
+        raise RuntimeError("LLM_API_KEY 未配置，请设置环境变量或 .env 文件")
     return ChatOpenAI(
         api_key=settings.llm_api_key,
         base_url=settings.llm_base_url,
@@ -50,14 +58,24 @@ def get_llm_client():
     )
 
 
+def get_llm_client() -> ChatOpenAI:
+    """获取 LLM 客户端（优先容器，回退到直接构建）"""
+    from smart_qa.di import container
+    if container.has("llm"):
+        return container.get("llm")
+    return _build_llm_client()
+
+
 # ═══════════════════════════════════════════
-# Security
+# 安全组件（优先容器，回退到直接构建）
 # ═══════════════════════════════════════════
 
 
-@lru_cache
 def get_rate_limiter() -> RateLimiter:
-    """获取 RateLimiter 单例"""
+    """获取 RateLimiter（优先容器，回退到直接构建）"""
+    from smart_qa.di import container
+    if container.has("rate_limiter"):
+        return container.get("rate_limiter")
     return RateLimiter(
         global_cap=settings.global_rate_limit,
         global_rate=settings.global_refill_rate,
@@ -67,9 +85,11 @@ def get_rate_limiter() -> RateLimiter:
     )
 
 
-@lru_cache
 def get_security() -> SensitiveFilter:
-    """获取 SensitiveFilter 单例"""
+    """获取 SensitiveFilter（优先容器，回退到直接构建）"""
+    from smart_qa.di import container
+    if container.has("security"):
+        return container.get("security")
     return SensitiveFilter()
 
 
@@ -78,10 +98,10 @@ def get_security() -> SensitiveFilter:
 # ═══════════════════════════════════════════
 
 
-@lru_cache
-def get_agent_graph():
-    """获取编译后的 LangGraph Agent 图（全局单例，启动时编译一次）"""
+def get_agent_graph() -> CompiledStateGraph:
+    """获取编译后的 LangGraph Agent 图（优先容器，回退构建）"""
     from smart_qa.agent.graph import build_graph
-
-    llm = get_llm_client()
-    return build_graph(llm_client=llm)
+    from smart_qa.di import container
+    if container.has("agent_graph"):
+        return container.get("agent_graph")
+    return build_graph(llm_client=get_llm_client())

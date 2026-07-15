@@ -1,23 +1,24 @@
 <script setup lang="ts">
-defineProps<{ intent: string }>()
+import { computed } from 'vue'
 
-const labels: Record<string, string> = {
-  qa: '知识问答',
-  troubleshoot: '故障排查',
-  consumables: '耗材管理',
-  general: '综合',
-}
+const props = defineProps<{ intent: string }>()
 
-const colors: Record<string, string> = {
-  qa: 'bg-accent-soft text-accent',
-  troubleshoot: 'bg-amber-50 text-amber-700',
-  consumables: 'bg-emerald-50 text-emerald-700',
-  general: 'bg-slate-100 text-slate-600',
-}
+const config = computed(() => {
+  const map: Record<string, { label: string; color: string; bg: string }> = {
+    qa: { label: '知识问答', color: 'text-accent', bg: 'bg-accent-soft' },
+    troubleshoot: { label: '故障排查', color: 'text-amber-700', bg: 'bg-amber-50' },
+    consumables: { label: '耗材管理', color: 'text-emerald-700', bg: 'bg-emerald-50' },
+    device_control: { label: '设备控制', color: 'text-sky-700', bg: 'bg-sky-50' },
+    report: { label: '使用报告', color: 'text-violet-700', bg: 'bg-violet-50' },
+    sql_query: { label: '数据查询', color: 'text-slate-700', bg: 'bg-slate-100' },
+    general: { label: '综合', color: 'text-neutral-600', bg: 'bg-neutral-100' },
+  }
+  return map[props.intent] || map.general
+})
 </script>
 
 <template>
-  <span :class="['inline-block text-[10px] font-medium px-1.5 py-0.5 rounded', (colors as any)[intent] || colors.general]">
-    {{ (labels as any)[intent] || intent }}
+  <span :class="[config.color, config.bg]" class="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium">
+    {{ config.label }}
   </span>
 </template>

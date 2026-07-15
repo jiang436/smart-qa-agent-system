@@ -46,6 +46,20 @@ async def init_db(dsn: str | None = None):
         except Exception:
             pass  # 列已存在
 
+    # Stamp Alembic head 以便后续迁移正常工作
+    try:
+        from alembic import command
+        from alembic.config import Config as AlembicConfig
+        import os
+
+        _alembic_cfg = AlembicConfig()
+        _alembic_cfg.set_main_option("script_location", os.path.join(os.path.dirname(__file__), "../../..", "alembic"))
+        _alembic_cfg.set_main_option("sqlalchemy.url", dsn)
+        command.stamp(_alembic_cfg, "head")
+        logger.info("Alembic 版本已标记为 head")
+    except Exception:
+        logger.debug("Alembic stamp 跳过（可能未配置）")
+
     logger.info("数据库已初始化，所有表已就绪")
 
 

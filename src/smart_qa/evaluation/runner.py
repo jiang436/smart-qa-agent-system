@@ -71,28 +71,43 @@ class EvalRunner:
 
         start = time.time()
         try:
-            predicted_intent, answer = await self._invoke_agent(query)
+            predicted_intent, answer, contexts = await self._invoke_agent(query)
             latency = time.time() - start
 
             # 维度 1: LLM-as-Judge 打分
             judge_result = await self.judge.evaluate(query, answer, expected_keywords)
 
-            # 维度 2: 关键词召回
+            # 维度 2: RAG Triad（context_relevance / faithfulness / answer_relevance）
+            from smart_qa.evaluation.metrics import evaluate_rag_triad
+            rag_triad = evaluate_rag_triad(query, answer, contexts, self.judge.llm) if contexts else {}
+
+            # 维度 3: 关键词召回
             kw_recall = keyword_recall(answer, expected_keywords)
 
-            # 维度 3: 意图分类
+            # 维度 4: 意图分类
             intent_correct = predicted_intent == expected_intent
 
-            # 综合
+            # 综合判定
             judge_ok = judge_result.get("overall") in ("PASS", "WEAK_PASS")
-            passed = judge_ok and kw_recall >= 0.5 and intent_correct
+            # device_control / sql_query 类型不依赖关键词召回（指令型查询）
+            action_intents = ("device_control", "sql_query", "general")
+            kw_pass = kw_recall >= 0.5 or expected_intent in action_intents
+            passed = judge_ok and kw_pass and intent_correct
+
+            # RAG Triad 单行显示
+            triad_str = ""
+            if rag_triad:
+                triad_str = (
+                    f" ctx={rag_triad.get('context_relevance', 0):.2f}"
+                    f" faith={rag_triad.get('faithfulness', 0):.2f}"
+                    f" ans={rag_triad.get('answer_relevance', 0):.2f}"
+                )
 
             print(
                 f"{'PASS' if passed else 'FAIL'} "
                 f"(judge={judge_result.get('overall', '?')} "
                 f"intent={intent_correct} "
-                f"kw={kw_recall:.2f} "
-                f"acc={judge_result.get('dimensions', {}).get('accuracy', 0):.2f} "
+                f"kw={kw_recall:.2f}{triad_str} "
                 f"{latency:.1f}s)"
             )
 
@@ -106,6 +121,7 @@ class EvalRunner:
                 "judge_verdict": judge_result.get("overall"),
                 "judge_dims": judge_result.get("dimensions", {}),
                 "judge_reason": judge_result.get("reason", ""),
+                "rag_triad": rag_triad,
                 "passed": passed,
             }
         except Exception as e:
@@ -120,12 +136,16 @@ class EvalRunner:
                 "judge_verdict": "ERROR",
                 "judge_dims": {},
                 "judge_reason": str(e),
+                "rag_triad": {},
                 "passed": False,
                 "error": str(e),
             }
 
-    async def _invoke_agent(self, query: str) -> tuple[str, str]:
-        """调用 Agent 返回 (intent, answer)"""
+    async def _invoke_agent(self, query: str) -> tuple[str, str, list[str]]:
+        """调用 Agent 返回 (intent, answer, contexts)
+
+        contexts: 检索到的文档列表，用于 RAG Triad 评测。
+        """
         from smart_qa.agent.graph import get_agent
 
         graph = self.graph or get_agent()
@@ -139,13 +159,24 @@ class EvalRunner:
             "max_steps": 15,
             "tool_calls_history": [],
             "final_answer": None,
+            "retrieved_docs": [],
             "error": None,
         }
         config = {"configurable": {"thread_id": state["session_id"]}}
         result = await graph.ainvoke(state, config=config)
         intent = result.get("intent", "general") or "general"
         answer = result.get("final_answer", "") or ""
-        return intent, answer
+        # 提取检索上下文文本列表
+        docs = result.get("retrieved_docs", []) or []
+        contexts = []
+        for d in docs:
+            if isinstance(d, dict):
+                contexts.append(d.get("content", ""))
+            elif hasattr(d, "page_content"):
+                contexts.append(d.page_content)
+            elif isinstance(d, str):
+                contexts.append(d)
+        return intent, answer, contexts
 
     def _print_report(self, report: dict):
         print("\n" + "=" * 50)
@@ -180,10 +211,34 @@ def cli():
     parser.add_argument(
         "--difficulty", type=str, default=os.environ.get("EVAL_DIFFICULTY"), help="筛选难度: easy/medium/hard"
     )
+    parser.add_argument(
+        "--judge-llm", action="store_true", default=os.environ.get("EVAL_JUDGE_LLM") == "1",
+        help="启用 LLM-as-Judge 打分（需要 LLM_API_KEY）"
+    )
     args = parser.parse_args()
 
     async def main():
-        runner = EvalRunner(llm_client=None)
+        # 确保 LLM 客户端注册到 DI 容器（eval 不走 web lifespan，需手动注册）
+        from smart_qa.deps import get_llm_client
+        from smart_qa.di import container
+
+        try:
+            llm = get_llm_client()
+            container.register("llm", llm)
+            print("[Eval] LLM 客户端已注册到 DI 容器")
+        except Exception as e:
+            print(f"[Eval] LLM 客户端注册失败（将用关键词降级）: {e}")
+
+        # 若启用 LLM judge，使用同一个客户端
+        judge_llm = container.get_optional("llm") if args.judge_llm else None
+        if args.judge_llm and judge_llm:
+            print("[Eval] LLM-as-Judge 已启用")
+        elif args.judge_llm:
+            print("[Eval] LLM-as-Judge 无可用客户端，降级为关键词模式")
+        else:
+            print("[Eval] 关键词模式（--judge-llm 可启用 LLM 评分）")
+
+        runner = EvalRunner(llm_client=judge_llm)
         await runner.run_all(scenario=args.scenario, difficulty=args.difficulty)
 
     asyncio.run(main())

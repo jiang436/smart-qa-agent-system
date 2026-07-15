@@ -25,10 +25,9 @@ from smart_qa.rag.chunking import SmartDocumentSplitter
 
 
 def read_documents(docs_dir: str) -> list[dict]:
-    """递归读取 docs_dir 下所有支持的文档（md/txt/pdf）
+    """用 DirectoryLoader 批量加载 + SmartDocumentSplitter 切分
 
-    Returns:
-        [{"content": "...", "source": "...", "title": "...", "category": "...", ...}]
+    自动识别 PDF/MD/TXT，按语义元素切分后输出 chunk 列表。
     """
     from smart_qa.knowledge.document_parser import DocumentParser
     from smart_qa.rag.chunking import SmartDocumentSplitter
@@ -51,37 +50,44 @@ def read_documents(docs_dir: str) -> list[dict]:
             category = rel_path.split(os.sep)[0]
 
             try:
-                content = parser.extract_text(filepath)
+                elements = parser.load(filepath)  # list[Document]
             except Exception as e:
                 print(f"[InitVector] 读取失败: {filepath}: {e}")
                 continue
 
-            if not content.strip():
+            if not elements:
                 continue
 
+            # 从第一个标题提取文档标题
             title = filename.rsplit(".", 1)[0]
-            for line in content.split("\n")[:5]:
-                line = line.strip()
-                if line.startswith("# "):
-                    title = line[2:].strip()
-                    break
+            for el in elements:
+                if el.metadata.get("element_type") in ("Title", "Header") and el.page_content:
+                    t = el.page_content.lstrip("#").strip()
+                    if t:
+                        title = t
+                        break
 
-            doc_type = SmartDocumentSplitter.detect_type(filename, content)
+            # 拼接所有元素 → 完整 Markdown
+            full_text = "\n\n".join(el.page_content for el in elements if el.page_content.strip())
+            if not full_text.strip():
+                continue
+
+            doc_type = SmartDocumentSplitter.detect_type(filename, full_text)
             chunks = splitter.split(
-                content,
-                doc_type=doc_type,
-                metadata={
-                    "source": rel_path,
-                    "title": title,
-                    "category": category,
-                },
+                full_text, doc_type=doc_type,
+                metadata={"source": rel_path, "title": title, "category": category},
             )
             for chunk in chunks:
+                chunk["element_types"] = _collect_element_types(elements)
                 documents.append(chunk)
-            print(f"[InitVector] {filename} → {len(chunks)} chunks (type={doc_type})")
+            print(f"[InitVector] {filename} → {len(chunks)} chunks ({len(elements)} elements)")
 
     print(f"[InitVector] 已读取 {len(documents)} 个文档片段 (来自 {docs_dir})")
     return documents
+
+
+def _collect_element_types(elements) -> list[str]:
+    return list(dict.fromkeys(el.metadata.get("element_type", "?") for el in elements))
 
 
 # ═══════════════════════════════════════════
@@ -105,7 +111,12 @@ def ensure_collection(client: MilvusClient, collection_name: str, dim: int) -> s
     schema.add_field("category", datatype=DataType.VARCHAR, max_length=64)
 
     index_params = client.prepare_index_params()
-    index_params.add_index(field_name="vector", metric_type="COSINE", index_type="IVF_FLAT", params={"nlist": 128})
+    index_params.add_index(
+        field_name="vector",
+        metric_type="COSINE",
+        index_type="HNSW",
+        params={"M": 16, "efConstruction": 256},
+    )
 
     client.create_collection(collection_name=collection_name, schema=schema, index_params=index_params)
     print(f"[InitVector] 集合已创建: {collection_name} (dim={dim})")
@@ -150,6 +161,9 @@ def insert_to_milvus(
             print(f"  [ERROR] 批量插入失败: {e}")
 
     client.flush(collection_name)
+    # reload 使新插入数据立即可查
+    client.release_collection(collection_name)
+    client.load_collection(collection_name)
     print(f"[InitVector] 插入完成: {inserted}/{total} 条")
 
 

@@ -96,9 +96,9 @@ class QAScenario:
             return state
 
         try:
-            from smart_qa.deps import get_llm_client
+            from smart_qa.di import container
 
-            rag = QAScenario._get_rag_agent(llm_client=get_llm_client())
+            rag = QAScenario._get_rag_agent(llm_client=container.get("llm"))
             state = await rag.retrieve_and_generate(state)
         except Exception as e:
             logger.error("RAG 执行异常: {}", e)

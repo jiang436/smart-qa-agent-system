@@ -1,24 +1,73 @@
 """故障排查场景 — 引导式多轮对话故障诊断
 
-文档第 2.3 节:
-  用户: "扫地机器人不工作了怎么办？"
-  -> 意图识别 -> RAG 检索常见原因 -> 引导式排查（多轮对话）
-  -> 精确匹配错误码 -> 输出解决方案
-
 故障排查状态机:
   INIT -> 收集症状 -> 列出可能原因 -> 逐轮验证 -> 定位根因 -> 输出方案
-                                                      ↓ (3轮未果)
+                                                      ↓ (5轮未果)
                                                    转人工客服
 
 技术要点:
   - 多轮对话状态追踪（task_memory 跟踪排查进度）
-  - 故障决策树（按优先级排查）
+  - 故障决策树（优先从 data/diagnosis_tree.json 加载，回退到内置默认）
   - 引导式排查（Agent 每轮问一个验证性问题）
   - 精确匹配（错误码直接匹配 ERROR_CODE_MAP）
-  - 异常降级（3轮以上未定位 -> 建议人工客服）
+  - 异常降级（5轮以上未定位 -> 建议人工客服）
 """
 
-# 错误码映射表（从 vision_agent 迁移）
+import json
+import os
+
+from smart_qa.config import settings
+
+# ── 加载故障决策树（外部 JSON 优先，内置兜底）──
+
+_BUILTIN_DIAGNOSIS_TREE: dict | None = None  # 延迟构建，见 _load_builtin_tree()
+
+
+def _load_diagnosis_tree() -> dict:
+    """加载故障决策树：优先从外部 JSON 文件，回退到内置默认"""
+    tree_path = settings.diagnosis_tree_path or "data/diagnosis_tree.json"
+    tree = None
+    if os.path.exists(tree_path):
+        try:
+            with open(tree_path, encoding="utf-8") as f:
+                tree = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    if not tree:
+        tree = _load_builtin_tree()
+    # 替换占位符
+    return _resolve_tree_placeholders(tree)
+
+
+def _resolve_tree_placeholders(tree: dict) -> dict:
+    """递归替换决策树中的配置占位符（如 {support_phone}）"""
+    phone = settings.get_support_phone()
+
+    def _walk(obj):
+        if isinstance(obj, str):
+            return obj.replace("{support_phone}", phone)
+        elif isinstance(obj, dict):
+            return {k: _walk(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [_walk(item) for item in obj]
+        return obj
+
+    return _walk(tree)
+
+
+def _load_builtin_tree() -> dict:
+    """内置默认决策树（兜底）—— 仅在外部 JSON 不可用时使用"""
+    global _BUILTIN_DIAGNOSIS_TREE
+    if _BUILTIN_DIAGNOSIS_TREE is not None:
+        return _BUILTIN_DIAGNOSIS_TREE
+    _BUILTIN_DIAGNOSIS_TREE = _build_default_tree()
+    return _BUILTIN_DIAGNOSIS_TREE
+
+
+DIAGNOSIS_TREE = _load_diagnosis_tree()
+
+
+# ── 错误码映射表 ──
 ERROR_CODE_MAP = {
     "E01": {"cause": "跌落传感器异常", "solution": "将扫地机放回平整地面，清洁底部悬崖传感器"},
     "E02": {"cause": "轮子卡住", "solution": "检查轮子是否被线缆/头发缠绕，清理异物后重启"},
@@ -30,8 +79,9 @@ ERROR_CODE_MAP = {
     "E08": {"cause": "水箱未安装", "solution": "安装水箱支架后再使用拖地功能"},
 }
 
-# -- 故障排查决策树 --
-DIAGNOSIS_TREE = {
+def _build_default_tree() -> dict:
+    """构建内置默认故障决策树（仅作为外部 JSON 不可用时的兜底）"""
+    return {
     "不工作/不开机": {
         "conditions": ["电源键", "充电座", "指示灯"],
         "causes": ["电量耗尽", "电源键接触不良", "电池故障", "主板故障"],
@@ -49,7 +99,7 @@ DIAGNOSIS_TREE = {
             {
                 "question": "充满电后按下机身电源键，设备能正常启动吗？",
                 "if_yes": "能正常启动！故障原因是充电触点脏污接触不良，问题已解决。建议每周用干布清洁一次充电触点。",
-                "if_no": "充电指示灯不亮、按键无法开机，可能是电池或充电主板硬件故障，建议联系售后专业检测维修。客服热线：400-XXX-XXXX。平常定期清洁充电触点，可避免同类问题。",
+                "if_no": "充电指示灯不亮、按键无法开机，可能是电池或充电主板硬件故障，建议联系售后专业检测维修。客服热线：{support_phone}。平常定期清洁充电触点，可避免同类问题。",
             },
         ],
     },
@@ -91,7 +141,7 @@ DIAGNOSIS_TREE = {
             {
                 "question": "用干布擦拭设备底部和充电座的金属触点后，能正常回充吗？",
                 "if_yes": "触点脏污导致接触不良，清理后就好了。建议每个月清洁一次。",
-                "if_no": "可能是红外传感器故障，建议联系售后进一步检测。客服热线：400-XXX-XXXX。",
+                "if_no": "可能是红外传感器故障，建议联系售后进一步检测。客服热线：{support_phone}。",
             },
         ],
     },
@@ -107,7 +157,7 @@ DIAGNOSIS_TREE = {
             {
                 "question": "取出尘盒重新安装到位后，噪音是否减小？",
                 "if_yes": "是尘盒未安装到位导致的，重新装好就行了。",
-                "if_no": "可能是风机故障，建议联系售后。客服热线：400-XXX-XXXX。",
+                "if_no": "可能是风机故障，建议联系售后。客服热线：{support_phone}。",
             },
         ],
     },
@@ -128,7 +178,7 @@ DIAGNOSIS_TREE = {
             {
                 "question": "长按Wi-Fi键5秒进入配网模式后，App能搜索到设备吗？",
                 "if_yes": "重新输入Wi-Fi密码试试。",
-                "if_no": "尝试重启路由器和设备后重新配网。如果仍然不行，建议联系售后。客服热线：400-XXX-XXXX。",
+                "if_no": "尝试重启路由器和设备后重新配网。如果仍然不行，建议联系售后。客服热线：{support_phone}。",
             },
         ],
     },
@@ -160,7 +210,7 @@ DIAGNOSIS_TREE = {
             {
                 "question": "充电1小时后，长按开机键10秒能启动吗？",
                 "if_yes": "是深度亏电导致，问题解决。",
-                "if_no": "电池或主板故障，建议联系售后检测。客服热线：400-XXX-XXXX。",
+                "if_no": "电池或主板故障，建议联系售后检测。客服热线：{support_phone}。",
             },
         ],
     },
@@ -197,7 +247,7 @@ DIAGNOSIS_TREE = {
             {
                 "question": "清理出水孔后，拖地出水恢复正常了吗？",
                 "if_yes": "出水孔堵塞已解决。建议每月清理一次出水孔，使用纯净水可减少堵塞。",
-                "if_no": "出水孔通畅但仍不出水，可能是水泵故障，建议联系售后检修。客服热线：400-XXX-XXXX。",
+                "if_no": "出水孔通畅但仍不出水，可能是水泵故障，建议联系售后检修。客服热线：{support_phone}。",
             },
         ],
     },
@@ -239,7 +289,7 @@ DIAGNOSIS_TREE = {
             {
                 "question": "调至4小时烘干并确保通风后，拖布能完全烘干吗？",
                 "if_yes": "问题解决。以后潮湿天气建议用4小时烘干时长。",
-                "if_no": "加热元件可能故障，建议联系售后检修。客服热线：400-XXX-XXXX。",
+                "if_no": "加热元件可能故障，建议联系售后检修。客服热线：{support_phone}。",
             },
         ],
     },
@@ -323,11 +373,15 @@ DIAGNOSIS_TREE = {
             {
                 "question": "尝试将电量用到自动关机，再充满一次（电池校准），续航改善了吗？",
                 "if_yes": "电池计量偏差导致，校准后恢复正常。",
-                "if_no": "校准无效，电池可能存在问题。建议联系售后检测。客服热线：400-XXX-XXXX。",
+                "if_no": "校准无效，电池可能存在问题。建议联系售后检测。客服热线：{support_phone}。",
             },
         ],
     },
 }
+
+
+# ── 在模块加载时构建 DIAGNOSIS_TREE ──
+DIAGNOSIS_TREE = _load_diagnosis_tree()
 
 
 class TroubleshootScenario:
@@ -338,16 +392,16 @@ class TroubleshootScenario:
     STAGE_DIAGNOSIS = "diagnosis"
     STAGE_RESOLVED = "resolved"
     STAGE_ESCALATED = "escalated"
-    MAX_DIAGNOSIS_ROUNDS = 5
+    MAX_DIAGNOSIS_ROUNDS = 5  # 可由 settings.troubleshoot_max_rounds 覆盖
 
     @staticmethod
     async def _polish(text: str) -> str:
         """LLM 润色——软化语气，不改变步骤和结论"""
         try:
             from smart_qa.agent.persona import get_system_prompt
-            from smart_qa.deps import get_llm_client
+            from smart_qa.di import container
 
-            llm = get_llm_client()
+            llm = container.get("llm")
             persona = get_system_prompt("troubleshoot")
             prompt = (
                 persona + "\n\n"
@@ -450,9 +504,10 @@ class TroubleshootScenario:
     async def _handle_diagnosis(user_response: str, state: dict, task_memory: dict, round_num: int) -> dict:
         """排查阶段: 处理用户回答，进入下一步"""
         if round_num >= TroubleshootScenario.MAX_DIAGNOSIS_ROUNDS:
+            phone = settings.get_support_phone()
             raw = (
                 "经过多轮排查还没找到确切原因，建议您联系我们的售后团队进一步检测：\n\n"
-                "1. 拨打客服热线：400-XXX-XXXX\n"
+                f"1. 拨打客服热线：{phone}\n"
                 "2. 在App中提交维修申请\n"
                 "3. 到最近的授权维修点检测\n\n"
                 "提交时请说明已经试过的排查步骤，能帮售后更快处理。"

@@ -1,9 +1,13 @@
 """FastAPI 入口 — 智能问答 Agent 系统"""
 
+import json as _json
+import os as _os
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text as _sa_text
 
 from smart_qa.api.routes import router
 from smart_qa.config import settings
@@ -27,26 +31,49 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("PostgreSQL 不可用: {}", str(e)[:100])
 
-    # 预加载 FAQ 快速匹配器（900 条常见问答，<10ms 命中）
+    # ── DI 容器注册（统一依赖管理入口）──
     try:
-        from smart_qa.knowledge.faq_matcher import get_faq_matcher
+        from smart_qa.di import container
+        from smart_qa.knowledge.knowledge_graph import KnowledgeGraph
+        from smart_qa.security import RateLimiter, SensitiveFilter
 
-        _faq = get_faq_matcher()
-        _faq_count = _faq.load(
-            [
-                "data/faq_knowledge_base.json",
-                "data/faq_consumables.json",
-                "data/faq_troubleshooting.json",
-            ]
-        )
-        logger.info("FAQ 快速匹配器已就绪 entries={}", _faq_count)
+        # 基础设施 — 始终可用
+        container.register("knowledge_graph", KnowledgeGraph())
+        container.register("rate_limiter", RateLimiter(
+            global_cap=settings.global_rate_limit,
+            global_rate=settings.global_refill_rate,
+            user_cap=settings.user_rate_limit,
+            user_rate=settings.user_refill_rate,
+            daily_budget=settings.daily_token_budget,
+        ))
+        container.register("security", SensitiveFilter())
+        logger.info("DI 容器: KnowledgeGraph / RateLimiter / SensitiveFilter 已注册")
+
+        # LLM 客户端 — 懒加载（首次 get("llm") 时才构建）
+        def _build_llm() -> Any:
+            from langchain_openai import ChatOpenAI
+            if not settings.llm_api_key:
+                raise RuntimeError("LLM_API_KEY 未配置")
+            return ChatOpenAI(
+                api_key=settings.llm_api_key,
+                base_url=settings.llm_base_url,
+                model=settings.lightweight_model,
+                temperature=0.3, max_tokens=2048, timeout=30,
+            )
+        container.register_factory("llm", _build_llm)
+
+        # Agent 图 — 懒加载（依赖 llm，通过工厂链自动解析）
+        def _build_graph() -> Any:
+            from smart_qa.agent.graph import build_graph
+            return build_graph(llm_client=container.get("llm"))
+        container.register_factory("agent_graph", _build_graph)
+
+        logger.info("DI 容器: LLM / AgentGraph 工厂已注册")
     except Exception as e:
-        logger.warning("FAQ 匹配器加载失败: {}", str(e)[:80])
+        logger.warning("DI 容器初始化失败: {}", e)
 
-    # 预加载 BM25 知识库（优先从磁盘加载，免每次重启重建）
+    # 预加载 BM25 知识库（含 FAQ JSON，优先从磁盘加载，免每次重启重建）
     try:
-        import os as _os
-
         from smart_qa.knowledge.bm25 import BM25Index
 
         _bm25 = BM25Index()
@@ -57,7 +84,8 @@ async def lifespan(app: FastAPI):
         else:
             # 无缓存 → 从文件构建后保存
             _docs = []
-            for _root, _dirs, _files in _os.walk("data/knowledge"):
+            _knowledge_dir = settings.get_knowledge_dir()
+            for _root, _dirs, _files in _os.walk(_knowledge_dir):
                 for _f in _files:
                     if _f.endswith(".md"):
                         with open(_os.path.join(_root, _f), encoding="utf-8") as _fh:
@@ -65,13 +93,7 @@ async def lifespan(app: FastAPI):
                                 if len(_p.strip()) > 20:
                                     _docs.append(_p.strip())
             # 加载 FAQ JSON
-            import json as _json
-
-            for _faq_file in [
-                "data/faq_knowledge_base.json",
-                "data/faq_consumables.json",
-                "data/faq_troubleshooting.json",
-            ]:
+            for _faq_file in settings.get_faq_file_list():
                 try:
                     with open(_faq_file, encoding="utf-8") as _fh:
                         _faq_data = _json.load(_fh)
@@ -106,9 +128,9 @@ async def lifespan(app: FastAPI):
 
         from smart_qa.agent.graph import set_store
 
-        pg_dsn = settings.postgres_dsn.replace("+asyncpg", "")
-        store = PostgresStore.from_conn_string(pg_dsn).__enter__()
-        await store.setup()
+        pg_dsn = settings.postgres_dsn.replace("+asyncpg", "")  # sync driver for PostgresStore
+        store = PostgresStore.from_conn_string(pg_dsn)
+        store.setup()  # sync setup: create tables
         set_store(store)
         logger.info("LangGraph Store 已就绪 (PostgresStore)")
     except Exception as e:
@@ -117,13 +139,25 @@ async def lifespan(app: FastAPI):
 
         set_store(InMemoryStore())
 
+    # 预热 BM25 + 向量预计算（避免首次请求等 40s）
+    try:
+        from smart_qa.rag.retrieval import _load_knowledge_bm25
+        _load_knowledge_bm25()
+        logger.info("BM25 索引 + 向量预计算已预热")
+    except Exception as e:
+        logger.warning("BM25 预热失败: {}", str(e)[:80])
+        from langgraph.store.memory import InMemoryStore
+
+        set_store(InMemoryStore())
+
     # OTel 可观测（有 OTEL_EXPORTER_OTLP_ENDPOINT 时生效）
     try:
-        from smart_qa.observability.tracer import setup_otel
+        from smart_qa.observability.tracer import setup_otel, setup_phoenix
 
         setup_otel(app=app)
+        setup_phoenix()
     except Exception as e:
-        logger.debug("OTel 接入异常: {}", e)
+        logger.debug("可观测接入异常: {}", e)
     yield
     try:
         await close_redis()
@@ -155,13 +189,51 @@ app.include_router(router, prefix="/api/v1")
 
 @app.get("/health")
 async def health():
+    """健康检查 — 实际探测各服务连通性"""
+    import asyncio
+
+    services: dict[str, str] = {}
+
+    # PostgreSQL 连通性检查
+    try:
+        from smart_qa.database.engine import _engine as pg_engine
+        if pg_engine is not None:
+            async with pg_engine.connect() as conn:
+                await conn.execute(_sa_text("SELECT 1"))
+            services["db"] = "ok"
+        else:
+            services["db"] = "not_initialized"
+    except Exception as e:
+        services["db"] = f"error: {str(e)[:80]}"
+
+    # Redis 连通性检查（2s 超时）
+    try:
+        from smart_qa.database.redis import redis_client
+        if redis_client is not None:
+            await asyncio.wait_for(redis_client.ping(), timeout=2.0)
+            services["redis"] = "ok"
+        else:
+            services["redis"] = "not_initialized"
+    except TimeoutError:
+        services["redis"] = "timeout"
+    except Exception as e:
+        services["redis"] = f"error: {str(e)[:80]}"
+
+    # Milvus 连通性检查
+    try:
+        from pymilvus import MilvusClient
+
+        from smart_qa.config import settings
+        client = MilvusClient(host=settings.milvus_host, port=settings.milvus_port)
+        client.list_collections()  # lightweight probe
+        services["milvus"] = "ok"
+    except Exception as e:
+        services["milvus"] = f"error: {str(e)[:80]}"
+
+    all_ok = all(v == "ok" for v in services.values())
     return {
-        "status": "ok",
-        "services": {
-            "db": "ok",
-            "redis": "ok",
-            "milvus": "ok",
-        },
+        "status": "ok" if all_ok else "degraded",
+        "services": services,
     }
 
 
@@ -169,7 +241,7 @@ def main():
     """CLI 入口: uv run smart-qa"""
     import uvicorn
 
-    uvicorn.run("src.smart_qa.web:app", host=settings.host, port=settings.port, reload=False)
+    uvicorn.run("smart_qa.web:app", host=settings.host, port=settings.port, reload=False)
 
 
 if __name__ == "__main__":

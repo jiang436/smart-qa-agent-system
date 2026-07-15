@@ -1,4 +1,4 @@
-"""SSE 流式输出 — 将 Agent 执行过程实时推送到前端"""
+"""SSE 流式输出 — 用 LangGraph astream 实现真正的逐节点推送"""
 
 import asyncio
 import json
@@ -6,10 +6,11 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from smart_qa.memory.conversation_store import save_messages
+from smart_qa.observability.logger import logger
 
 
 class SSEStreamHandler:
-    """SSE 流处理器"""
+    """SSE 流处理器 — 真正边执行边推送"""
 
     @staticmethod
     async def stream_agent_response(
@@ -19,12 +20,8 @@ class SSEStreamHandler:
         initial_state: dict[str, Any] | None = None,
         output_filter=None,
     ) -> AsyncGenerator[str, None]:
-        # 阶段 1: 意图识别
-        yield SSEStreamHandler._format_event("status", {"stage": "意图识别", "message": "正在理解您的问题..."})
-        await asyncio.sleep(0.05)
-
         if agent_executor is None:
-            yield SSEStreamHandler._format_event("error", {"message": "Agent 服务未初始化"})
+            yield SSEStreamHandler._event("error", {"message": "Agent 服务未初始化"})
             return
 
         if initial_state is None:
@@ -40,38 +37,65 @@ class SSEStreamHandler:
                 "loop_detected": False,
             }
 
-        try:
-            yield SSEStreamHandler._format_event("status", {"stage": "检索", "message": "正在查找信息..."})
+        session_id = initial_state.get("session_id", "default")
+        config = {"configurable": {"thread_id": session_id}}
 
-            config = {"configurable": {"thread_id": initial_state.get("session_id", "default")}}
-            result = await agent_executor.ainvoke(initial_state, config=config)
+        # 节点中文名映射
+        _NODE_LABELS = {
+            "memory_reader": ("准备", "正在加载用户信息..."),
+            "router": ("意图识别", "正在理解您的问题..."),
+            "qa": ("检索中", "正在查找相关资料..."),
+            "troubleshoot": ("故障诊断", "正在排查问题..."),
+            "consumables": ("耗材查询", "正在查找耗材信息..."),
+            "device_control": ("设备控制", "正在下发指令..."),
+            "report": ("报告生成", "正在生成报告..."),
+            "general_handler": ("处理中", "正在处理..."),
+            "guard_check": ("校验", "正在检查回答质量..."),
+            "memory_writer": ("保存", "正在保存对话..."),
+        }
+
+        result = {}
+        try:
+            # 流式遍历每个节点
+            async for chunk in agent_executor.astream(initial_state, config=config):
+                for node_name, node_output in chunk.items():
+                    label, msg = _NODE_LABELS.get(node_name, (node_name, f"执行中: {node_name}"))
+                    yield SSEStreamHandler._event("status", {"stage": label, "message": msg, "node": node_name})
+
+                    # 累积结果（最后一个非 None 的 output 覆盖）
+                    if isinstance(node_output, dict):
+                        result.update(node_output)
+
+            # 输出 final_answer
             final_answer = result.get("final_answer", "")
             intent = result.get("intent", "")
 
             if final_answer:
-                # 输出脱敏
                 if output_filter:
                     final_answer = output_filter(final_answer)
-                yield SSEStreamHandler._format_event("status", {"stage": "生成", "message": "正在生成回答..."})
+                yield SSEStreamHandler._event("status", {"stage": "生成回答", "message": "完成"})
+                # 以词为单位流式输出
                 for ch in final_answer:
-                    yield SSEStreamHandler._format_event("token", {"text": ch})
-                    await asyncio.sleep(0.02)
+                    yield SSEStreamHandler._event("token", {"text": ch})
+                    await asyncio.sleep(0.015)
             else:
-                yield SSEStreamHandler._format_event("token", {"text": "抱歉，未能生成回答。"})
+                yield SSEStreamHandler._event("token", {"text": "抱歉，未能生成回答。"})
 
-            # 持久化所有记忆层
+            # 持久化
             await SSEStreamHandler._persist(result)
 
-            yield SSEStreamHandler._format_event("citation", {"message": "以上信息来自产品资料"})
-            sid = result.get("session_id", initial_state.get("session_id", ""))
-            yield SSEStreamHandler._format_event("done", {"message": "回答完成", "intent": intent, "session_id": sid})
+            yield SSEStreamHandler._event("done", {
+                "message": "回答完成",
+                "intent": intent,
+                "session_id": result.get("session_id", session_id),
+            })
 
         except Exception as e:
-            yield SSEStreamHandler._format_event("error", {"message": str(e)[:200]})
+            logger.error("SSE 流式异常: {}", str(e)[:200])
+            yield SSEStreamHandler._event("error", {"message": str(e)[:200]})
 
     @staticmethod
     async def _persist(state: dict):
-        """持久化对话上下文到 PostgreSQL"""
         sid = state.get("session_id")
         uid = state.get("user_id", "anonymous")
         if not sid:
@@ -79,17 +103,12 @@ class SSEStreamHandler:
         try:
             messages = state.get("messages", [])
             if isinstance(messages, list) and len(messages) > 1:
-                await save_messages(
-                    session_id=sid,
-                    user_id=uid,
-                    messages=messages,
-                    intent=state.get("intent"),
-                )
-        except Exception:
-            pass
+                await save_messages(session_id=sid, user_id=uid, messages=messages, intent=state.get("intent"))
+        except Exception as e:
+            logger.debug("SSE persist 失败: {}", e)
 
     @staticmethod
-    def _format_event(event: str, data: dict[str, Any]) -> str:
+    def _event(event: str, data: dict[str, Any]) -> str:
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
     @staticmethod

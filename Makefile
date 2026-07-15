@@ -47,8 +47,23 @@ eval-easy:
 db-init:
 	uv run python -m smart_qa.scripts.init_db
 
+db-migrate:
+	uv run alembic upgrade head
+
+db-migrate-check:
+	uv run alembic check
+
+db-migrate-new:
+	uv run alembic revision --autogenerate -m "$(msg)"
+
 vector-init:
 	uv run python -m smart_qa.scripts.init_vector_store
+
+# ── 集成测试 ──
+
+test-integration:
+	POSTGRES_DSN=postgresql+asyncpg://user:password@localhost:5432/agent \
+	uv run pytest tests/test_database_integration.py -v
 
 # ── Docker ──
 

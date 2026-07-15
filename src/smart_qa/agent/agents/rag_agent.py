@@ -90,15 +90,21 @@ class RAGAgent:
             cot_prompt = ""
 
         logger.info("开始检索 query={} enriched={}", query[:40], enriched_query[:60])
-        retrieval_result = self.retriever.retrieve(enriched_query, top_k=5)
 
-        docs = retrieval_result.get("docs", [])
-        retrieval_source = retrieval_result.get("source", "L4_llm")
+        # ── C-RAG: 检索 → 评估 → 修正 ──
+        retrieval_result, docs, retrieval_source = await self._crag_retrieve(
+            enriched_query, top_k=5, max_retries=2
+        )
+
         logger.info("检索完成 source={} hits={}", retrieval_source, len(docs))
         state["retrieved_docs"] = docs
 
         if docs:
             self.citation_tracker.register_docs(docs)
+
+        # 上下文压缩 — 每篇文档只保留与 query 相关的句子
+        if docs and self.llm:
+            docs = self._compress_docs(query, docs)
 
         history = self._extract_history(state)
         context = self._build_context(query, docs, history)
@@ -124,6 +130,13 @@ class RAGAgent:
             refined = {"final_answer": final_answer, "confidence": 0.7}
 
         final_answer = refined.get("final_answer", final_answer)
+
+        # L4 兜底时标注来源（无检索文档 → 基于模型自身知识）
+        if retrieval_source == "L4_llm" and not final_answer.startswith("（提示："):
+            final_answer = (
+                "（提示：以下内容基于通用知识，知识库中暂无精确匹配的文档。）\n\n"
+                + final_answer
+            )
 
         logger.info("写入缓存 query={}", query[:60])
         await self.cache.set(query, final_answer)
@@ -156,19 +169,18 @@ class RAGAgent:
         return extract_user_query(state)
 
     def _enrich_query_with_history(self, query: str, state: dict) -> str:
-        """从上一轮对话提取话题词，注入短查询，解决上下文丢失
+        """从上一轮对话提取话题词，注入短查询
 
-        "多久洗一次？" → 上文聊滤网 → "滤网 清洗频率 多久洗一次"
+        LLM 提取核心话题（2-3 词），替代硬编码关键词列表。
         """
-        # 如果当前查询已经足够长且具体，不需要增强
-        if len(query) >= 10:
+        if len(query) >= 15:
             return query
 
         messages = state.get("messages", [])
         if len(messages) < 2:
             return query
 
-        # 从上一轮助手回答中提取关键词
+        # 取上一轮助手回答
         last_assistant = ""
         for msg in reversed(messages[:-1]):
             content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
@@ -177,51 +189,164 @@ class RAGAgent:
                 last_assistant = content
                 break
 
-        if not last_assistant:
+        if not last_assistant or not self.llm:
             return query
 
-        # 提取产品/耗材关键词
-        topic_keywords = [
-            "边刷",
-            "主刷",
-            "滚刷",
-            "拖布",
-            "抹布",
-            "滤网",
-            "HEPA",
-            "hepa",
-            "集尘袋",
-            "尘袋",
-            "清洁液",
-            "清洗液",
-            "银离子",
-            "阻垢剂",
-            "清洗盘",
-            "基站",
-            "水箱",
-            "清水箱",
-            "污水箱",
-            "充电座",
-            "充电触点",
-            "驱动轮",
-            "万向轮",
-            "传感器",
-            "激光雷达",
-            "防撞条",
-            "尘盒",
-            "X30 Pro",
-            "X30",
-        ]
-        found = []
-        for kw in topic_keywords:
-            if kw.lower() in last_assistant.lower():
-                found.append(kw)
+        try:
+            prompt = (
+                "从以下助手回答中，提取 2-3 个核心话题词（产品名/部件/功能），"
+                "用空格分隔。只输出词，不要解释。\n\n"
+                f"助手回答：{last_assistant[:300]}\n话题词："
+            )
+            resp = self.llm.invoke(prompt)
+            topics = (resp.content if hasattr(resp, "content") else str(resp)).strip()
+            if topics and len(topics) < 50:
+                enriched = topics + " " + query
+                logger.info("检索查询增强 query={} -> enriched={}", query[:30], enriched[:80])
+                return enriched
+        except Exception as e:
+            logger.debug("查询增强 LLM 调用失败: {}", e)
 
-        if found:
-            enriched = " ".join(found[:3]) + " " + query
-            logger.info("检索查询增强 query={} -> enriched={}", query[:30], enriched[:50])
-            return enriched
         return query
+
+    async def _crag_retrieve(
+        self, query: str, top_k: int = 5, max_retries: int = 2
+    ) -> tuple[dict, list[dict], str]:
+        """C-RAG: 检索 → 评估 → 修正循环
+
+        核心逻辑（来自 Datawhale RAG 指南 §4.5 校正检索）:
+          1. 检索文档
+          2. 评估质量 — 如果文档与问题高度相关 → 直接使用
+          3. 质量不足 → 查询改写 → 重新检索（最多重试 N 次）
+          4. 多次重试仍差 → 标记为 L4_llm 兜底
+
+        Returns:
+            (retrieval_result, docs, source_label)
+        """
+        retrieval_result = await self.retriever.retrieve_async(query, top_k=top_k)
+        docs = retrieval_result.get("docs", [])
+        source = retrieval_result.get("source", "L4_llm")
+
+        # 快速预判：有足够文档 + 置信度高 → 跳过评估
+        if len(docs) >= 3 and retrieval_result.get("confidence") == "high":
+            return retrieval_result, docs, source
+
+        # 质量评估
+        quality_ok = self._check_retrieval_quality(query, docs)
+
+        retry = 0
+        while not quality_ok and retry < max_retries:
+            retry += 1
+            logger.info("C-RAG: 检索质量不足, 改写重试 ({}/{})", retry, max_retries)
+
+            # 改写查询
+            if self.llm:
+                rewritten = self.retriever._rewrite_query(query) if hasattr(self.retriever, "_rewrite_query") else None
+            else:
+                rewritten = None
+            if not rewritten:
+                break
+
+            retrieval_result = await self.retriever.retrieve_async(rewritten, top_k=top_k)
+            docs = retrieval_result.get("docs", [])
+            source = retrieval_result.get("source", "L2_rewrite")
+            quality_ok = self._check_retrieval_quality(query, docs)
+
+        if not quality_ok:
+            logger.warning("C-RAG: {} 次重试后检索质量仍不足 → 降级 LLM 自身知识", retry)
+            retrieval_result["confidence"] = "low"
+            retrieval_result["source"] = "L4_llm"
+            retrieval_result["note"] = (retrieval_result.get("note", "") + " | C-RAG 降级 LLM 兜底").strip()
+
+        return retrieval_result, docs, retrieval_result.get("source", source)
+
+    def _check_retrieval_quality(self, query: str, docs: list[dict]) -> bool:
+        """评估检索质量 — 文档是否与 query 相关
+
+        判断标准:
+          1. ReRank 最高分 ≥ 0.5 → 质量 OK
+          2. 有 ≥ 2 条文档且最高分 ≥ 0.3 → OK
+          3. 其他 → 质量不足
+        """
+        if not docs:
+            return False
+
+        # ReRank 分优先（0-1 归一化），原始分做参考
+        top_rerank = max((d.get("rerank_score", 0) or 0) for d in docs)
+        top_score = top_rerank if top_rerank > 0 else max(
+            (d.get("score", 0) or 0) for d in docs
+        )
+        # 原始 BM25 分 (>1) 映射到 0-1 区间
+        if top_score > 1:
+            top_score = min(top_score / 20.0, 1.0)
+
+        if top_score >= 0.5:
+            return True
+        if len(docs) >= 2 and top_score >= 0.3:
+            return True
+
+        logger.debug("C-RAG 评估: quality=low top_score={:.3f} docs={}", top_score, len(docs))
+        return False
+
+    def _compress_docs(self, query: str, docs: list[dict]) -> list[dict]:
+        """上下文压缩 — 一次 LLM 调用批量压缩所有文档
+
+        比逐篇调用快 5 倍（5 次 → 1 次 API 调用）。
+        """
+        if not self.llm or not docs:
+            return docs
+
+        # 短文档直接保留
+        short = [d for d in docs if len(d.get("content", "")) < 100]
+        to_compress = [d for d in docs if len(d.get("content", "")) >= 100]
+
+        if not to_compress:
+            return docs
+
+        # 构建批量 prompt
+        docs_block = ""
+        for i, doc in enumerate(to_compress[:5]):
+            docs_block += f"[文档{i}]\n{doc.get('content', '')[:500]}\n\n"
+
+        try:
+            prompt = (
+                "从以下文档中，逐篇提取与用户问题**直接相关**的句子。无关的整篇丢弃（标记 NONE）。\n"
+                "保持原文不变，不要改写。\n\n"
+                f"用户问题：{query}\n\n"
+                f"{docs_block}"
+                "输出格式（每篇一段）:\n"
+                "[文档0] 相关句子\n"
+                "[文档0] NONE   ← 表示这篇全都不相关\n"
+                "[文档1] 相关句子\n"
+                "..."
+            )
+            resp = self.llm.invoke(prompt)
+            text = resp.content if hasattr(resp, "content") else str(resp)
+
+            # 解析批量结果
+            import re
+            compressed = list(short)
+            for i, doc in enumerate(to_compress[:5]):
+                pattern = rf"\[文档{i}\]\s*(.+)"
+                m = re.search(pattern, text)
+                if m:
+                    extracted = m.group(1).strip()
+                    if "NONE" in extracted.upper():
+                        logger.debug("文档丢弃 doc={}", i)
+                    else:
+                        new_doc = dict(doc)
+                        new_doc["content"] = extracted
+                        new_doc["compressed"] = True
+                        compressed.append(new_doc)
+                        if len(extracted) < len(doc.get("content", "")):
+                            logger.debug("文档压缩 doc={} chars: {} → {}", i, len(doc.get("content", "")), len(extracted))
+                else:
+                    compressed.append(doc)
+        except Exception as e:
+            logger.debug("批量压缩失败: {}", e)
+            return docs
+
+        return compressed if compressed else docs
 
     def _extract_history(self, state: dict) -> str:
         """提取最近 3 轮对话历史"""
@@ -240,12 +365,7 @@ class RAGAgent:
         return "\n".join(lines) if lines else ""
 
     def _build_context(self, query: str, docs: list[dict], history: str = "") -> str:
-        """组装 LLM 上下文 — 不再暴露调试标记
-
-        修复: 之前输出 [检索来源: L1_semantic] 和 [文档N] 标记，
-        与 persona 要求"不要用'根据知识库'等后台术语"冲突。
-        现在改为自然语气引出参考资料。
-        """
+        """组装 LLM 上下文 — 知识检索 + 知识图谱 + 对话历史"""
         parts = []
 
         if docs:
@@ -255,7 +375,17 @@ class RAGAgent:
                 if content:
                     parts.append(f"• {content}")
         else:
-            parts.append("[按常识回答]")
+            parts.append("（未找到相关资料，请根据产品常识谨慎回答，不要编造技术参数）")
+
+        # 知识图谱补充
+        try:
+            from smart_qa.knowledge.knowledge_graph import get_kg
+
+            kg_context = get_kg().augment_context(query)
+            if kg_context:
+                parts.append(f"\n\n{kg_context}")
+        except Exception:
+            pass
 
         if history:
             parts.append(f"\n\n对话历史：\n{history}")
@@ -264,14 +394,13 @@ class RAGAgent:
         return "\n".join(parts)
 
     async def _generate_answer(self, query: str, context: str, cot_prompt: str) -> str:
-        """调用 LLM 生成回答"""
+        """调用 LLM 流式生成回答"""
         if not self.llm:
             return (
                 f"关于「{query[:30]}...」，我暂时没有找到相关的资料。您可以看看产品说明书，或者联系客服获取更多帮助。"
             )
 
         system_prompt = get_system_prompt("qa")
-
         if cot_prompt:
             system_prompt += f"\n\n思考步骤:\n{cot_prompt}"
 
@@ -281,20 +410,29 @@ class RAGAgent:
         ]
 
         try:
-            response = await self.llm.ainvoke(messages)
-            content = response.content if hasattr(response, "content") else str(response)
-            return self._clean_output(content)
+            # 真流式：astream token by token
+            full_text = ""
+            async for chunk in self.llm.astream(messages):
+                if hasattr(chunk, "content") and chunk.content:
+                    full_text += chunk.content
+            return self._clean_output(full_text) if full_text else ""
         except Exception as e:
-            logger.error("LLM 调用失败: {}", e)
-            return "抱歉，处理您的问题时遇到了一点小问题，请稍后重试或联系人工客服。"
+            # astream 失败降级 ainvoke
+            try:
+                response = await self.llm.ainvoke(messages)
+                content = response.content if hasattr(response, "content") else str(response)
+                return self._clean_output(content)
+            except Exception as e2:
+                logger.error("LLM 调用失败: {}", e2)
+                return "抱歉，处理您的问题时遇到了一点小问题，请稍后重试或联系人工客服。"
 
     @staticmethod
     def _clean_output(text: str) -> str:
-        """过滤内部调试标记，清理输出"""
+        """清理输出格式，保留引用标注"""
         import re
 
-        text = re.sub(r"\[来源[：:][^\]]*\]", "", text)
-        text = re.sub(r"\[无来源\]", "", text)
+        # 保留 [来源: xxx] 和 [无来源] 标记供用户参考
+        # 仅清理多余空行
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
 
@@ -326,7 +464,7 @@ class RAGAgent:
                 "confidence": 0.99,
             }
 
-        result = self.retriever.retrieve(query, top_k=5)
+        result = await self.retriever.retrieve_async(query, top_k=5)
         docs = result.get("docs", [])
 
         context = self._build_context(query, docs)

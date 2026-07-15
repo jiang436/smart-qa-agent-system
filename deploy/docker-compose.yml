@@ -63,6 +63,7 @@ services:
 
   milvus:
     image: milvusdb/milvus:v2.5.6
+    command: milvus run standalone
     ports:
       - "19530:19530"
     environment:

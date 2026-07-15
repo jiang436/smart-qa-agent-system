@@ -15,6 +15,7 @@
 """
 
 import os
+import threading
 import time
 from contextlib import contextmanager
 from typing import Any
@@ -197,16 +198,20 @@ class Tracer:
         )
 
 
-# ── 全局单例 ──
-_tracer: Tracer | None = None
-
-
 def get_tracer() -> Tracer:
-    """获取全局 Tracer 实例"""
-    global _tracer
-    if _tracer is None:
-        _tracer = Tracer()
-    return _tracer
+    """获取 Tracer 实例（优先从 DI 容器，回退到直接构建）
+
+    注册方式（在 lifespan 中）:
+        from smart_qa.di import container
+        container.register("tracer", Tracer())
+    """
+    try:
+        from smart_qa.di import container
+        if container.has("tracer"):
+            return container.get("tracer")
+    except Exception:
+        pass
+    return Tracer()
 
 
 def setup_otel(app=None):
@@ -252,3 +257,43 @@ def setup_otel(app=None):
         logger.debug("OTel SQLAlchemy instrument 失败: {}", e)
 
     logger.info("OpenTelemetry 可观测已就绪 endpoint={}", endpoint)
+
+
+def setup_phoenix():
+    """启动 Phoenix 可观测面板（本地开发）
+
+    Phoenix 提供:
+      - 实时追踪可视化 (http://localhost:6006)
+      - LLM 调用详情（模型/token/延迟）
+      - 检索性能分析
+      - Bad Case 筛选
+
+    数据自动保存到 D:/ai_data/phoenix/，重启不丢失。
+    """
+    try:
+        import phoenix as px
+
+        # 持久化到 D 盘
+        phoenix_dir = "D:/ai_data/phoenix"
+        os.makedirs(phoenix_dir, exist_ok=True)
+
+        # 检查是否已有 session 在运行
+        if px.active_session() is not None:
+            logger.info("Phoenix 已在运行: http://localhost:6006")
+            return
+
+        # 启动 Phoenix 后台线程
+        def _launch():
+            px.launch_app()
+
+        t = threading.Thread(target=_launch, daemon=True)
+        t.start()
+        time.sleep(2)  # 等待启动
+
+        logger.info("Phoenix 可观测面板: http://localhost:6006")
+        logger.info("  追踪数据: D:/ai_data/phoenix")
+
+    except ImportError:
+        logger.debug("Phoenix 未安装，跳过可观测面板")
+    except Exception as e:
+        logger.warning("Phoenix 启动失败: {}", e)

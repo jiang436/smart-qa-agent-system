@@ -1,23 +1,43 @@
 <script setup lang="ts">
 import type { Message } from '@/stores/chat'
 import IntentBadge from './IntentBadge.vue'
+import CitationCard from './CitationCard.vue'
+import { computed } from 'vue'
 
-defineProps<{ msg: Message }>()
+const props = defineProps<{ msg: Message }>()
+
+const isUser = computed(() => props.msg.role === 'user')
 </script>
 
 <template>
-  <div :class="msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'">
+  <div :class="['flex animate-slide-up', isUser ? 'justify-end' : 'justify-start']">
     <div
       :class="[
-        'max-w-[75%] rounded-lg px-4 py-2.5 text-sm leading-relaxed',
-        msg.role === 'user'
-          ? 'bg-accent text-white rounded-br-sm'
-          : 'bg-white border border-slate-200 rounded-bl-sm shadow-e1'
+        'max-w-[75%] message-prose',
+        isUser
+          ? 'bg-accent text-white rounded-2xl rounded-br-md px-4 py-2.5 shadow-e1'
+          : 'glass-card rounded-2xl rounded-bl-md px-5 py-3 shadow-e1'
       ]"
     >
-      <IntentBadge v-if="msg.intent && msg.role === 'assistant'" :intent="msg.intent" class="mb-1.5" />
-      <div v-if="msg.isStreaming" class="typing-cursor whitespace-pre-wrap break-words">{{ msg.content }}</div>
-      <div v-else class="whitespace-pre-wrap break-words">{{ msg.content }}</div>
+      <!-- Intent badge -->
+      <IntentBadge v-if="msg.intent && !isUser" :intent="msg.intent" class="mb-2" />
+
+      <!-- Content -->
+      <div
+        v-if="msg.isStreaming"
+        class="typing-cursor whitespace-pre-wrap break-words text-sm leading-relaxed"
+      >{{ msg.content }}</div>
+      <div v-else class="whitespace-pre-wrap break-words text-sm leading-relaxed">{{ msg.content }}</div>
+
+      <!-- Citations -->
+      <div v-if="msg.citations?.length && !isUser" class="mt-3 space-y-2">
+        <CitationCard
+          v-for="cite in msg.citations"
+          :key="cite.doc_id"
+          :text="cite.matched_sentence"
+          :source="cite.source"
+        />
+      </div>
     </div>
   </div>
 </template>

@@ -112,8 +112,10 @@ class SemanticCache:
             await self._store_redis(r, query, answer, vec_1d)
 
         # 写穿：本地也存一份，减少 Redis 读放大
+        from smart_qa.config import settings
+
         self._local_store.append((query, answer, vec_1d))
-        if len(self._local_store) > 1000:
+        if len(self._local_store) > settings.cache_lru_capacity:
             self._local_store.pop(0)
 
     async def clear(self):

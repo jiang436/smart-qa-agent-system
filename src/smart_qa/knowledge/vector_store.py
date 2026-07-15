@@ -45,8 +45,9 @@ class EmbeddingModel:
         self._backend = create_embedding_backend(
             backend=settings.embedding_backend,
             model=settings.embedding_model,
-            api_key=getattr(settings, "llm_api_key", ""),
+            api_key=settings.embedding_api_key or settings.llm_api_key,
             base_url=settings.embedding_base_url or settings.llm_base_url,
+            fallback_model=settings.embedding_fallback_model,
         )
 
     @property
@@ -55,11 +56,22 @@ class EmbeddingModel:
             return 512
         return self._backend.dimension
 
-    def encode(self, texts: str | list[str]) -> np.ndarray:
+    def encode(self, texts: str | list[str], batch_size: int = 10) -> np.ndarray:
+        """编码文本（自动分批，兼容 API 后端限制）"""
         is_single = isinstance(texts, str)
         if is_single:
             texts = [texts]
-        result = self._backend.encode(texts)
+
+        if len(texts) <= batch_size:
+            result = self._backend.encode(texts)
+        else:
+            # 自动分批编码，再拼接
+            batches = []
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i : i + batch_size]
+                batches.append(self._backend.encode(batch))
+            result = np.concatenate(batches, axis=0)
+
         return result[0:1] if is_single else result
 
     def cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:

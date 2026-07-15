@@ -1,32 +1,16 @@
 """智能文档分片器 — 根据文档类型选择切分策略
 
-不同格式的文档需要不同的切分策略，不能一把固定 chunk_size 解决。
+不同格式的文档需要不同的切分策略:
 
-分片决策树:
+分片策略选择:
+  - TXT / Markdown → 递归字符切分 (chunk_size=500, overlap=50)
+  - PDF（文字版）→ 按标题层级切分，保留结构
+  - PDF（扫描件）→ OCR → 递归字符切分
+  - PDF（表格）→ 结构化存储，独立 chunk + headers 元数据
+  - PDF（图文混排）→ 布局分析 → 按阅读顺序切分
 
-输入文档
-    │
-    ├── TXT / Markdown → RecursiveCharacterTextSplitter
-    │   chunk_size=500, overlap=50
-    │   分隔符: ["\\n\\n", "\\n", "。", ".", " ", ""]
-    │
-    ├── PDF（文字版）→ MarkdownHeaderTextSplitter
-    │   按 ## / ### 标题做 Semantic Chunking
-    │   chunk_size=300-800（按语义边界，不是硬切）
-    │
-    ├── PDF（扫描件）→ OCR → RecursiveCharacter
-    │   先 OCR 识别文字，再按正文切分
-    │
-    ├── PDF（表格）→ 结构化存储
-    │   每个表格作为独立 Document，元数据记录 headers
-    │
-    └── PDF（图文混排）→ 布局分析 → 按阅读顺序切分
-
-面试要点:
-  "PDF 切分不是一刀切。文字 PDF 按标题章节保留结构；
-   扫描件 OCR 后按正文切分；表格单独提取结构化存储。
-   固定 chunk_size 导致标题和内容分离，检索时只命中内容没命中
-   标题，回答就缺少上下文。按语义边界切分比按字数切分效果好 20-30%。"
+设计原则: 按语义边界切分比按固定字数切分效果好 20-30%，
+因为固定长度会导致标题与内容分离，检索时丢失上下文。
 """
 
 import re
@@ -44,7 +28,7 @@ class SmartDocumentSplitter:
     支持策略:
       - recursive:     递归字符切分 (TXT / Markdown)
       - header:        按标题层级切分 (有结构的 PDF)
-      - semantic:      按语义边界切分 (通过段落间距判断)
+      - semantic:      按语义边界切分 (需提供 embedding_model，通过相邻句相似度找断点)
       - table:         表格结构化提取
       - ocr:           OCR 结果按句子切分
     """
@@ -77,14 +61,16 @@ class SmartDocumentSplitter:
         """
         meta = metadata or {}
 
-        if doc_type in ("txt", "markdown", "ocr"):
+        if doc_type in ("markdown", "pdf_text"):
+            chunks = self._split_markdown_structured(text, meta)
+        elif doc_type == "semantic" and self.embedding_model is not None:
+            chunks = self._semantic_split(text, meta)
+        elif doc_type in ("txt", "ocr"):
             chunks = self._split_recursive(text, meta)
-        elif doc_type == "pdf_text":
-            chunks = self._split_by_headers(text, meta)
         elif doc_type == "table":
             chunks = self._split_table(text, meta)
         else:
-            chunks = self._split_recursive(text, meta)  # 默认递归切分
+            chunks = self._split_recursive(text, meta)
 
         avg_size = 0
         if chunks:
@@ -159,7 +145,39 @@ class SmartDocumentSplitter:
 
         return result
 
-    # ── 策略 2: 按标题层级切分 (有结构的 PDF) ──
+    # ── 策略 2: Markdown 结构化分块（两阶段）──
+
+    def _split_markdown_structured(self, text: str, meta: dict) -> list[dict]:
+        """Markdown 文档两阶段分块
+
+        Stage 1: 按 ## 标题切分为逻辑章节，保留 Header1/Header2 元数据
+        Stage 2: 章节过长 (>chunk_size) → 递归切分，子块继承标题路径
+        """
+        chunks = self._split_by_headers(text, meta)
+
+        # 对每个章节检查是否需要 Stage 2 细切
+        final = []
+        for chunk in chunks:
+            content = chunk.get("content", "")
+            if len(content) <= self.chunk_size:
+                final.append(chunk)
+            else:
+                # Stage 2: 递归切分，保留标题元数据
+                sub_meta = {**meta, "header": chunk.get("header", ""), "level": chunk.get("level", 0)}
+                sub_chunks = self._split_recursive(content, sub_meta)
+                # 子块继承 Header 元数据
+                for _i, sc in enumerate(sub_chunks):
+                    final.append({
+                        **sc,
+                        "chunk_index": len(final),
+                        "strategy": "markdown_header+recursive",
+                        "section": chunk.get("header", ""),
+                    })
+
+        logger.info("Markdown 结构化分块: sections={} chunks={}", len(chunks), len(final))
+        return final
+
+    # ── 策略 3: 按标题层级切分 ──
 
     def _split_by_headers(self, text: str, meta: dict) -> list[dict]:
         """按 Markdown 标题层级切分

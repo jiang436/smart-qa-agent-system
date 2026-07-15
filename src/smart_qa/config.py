@@ -19,8 +19,8 @@ class Settings(BaseSettings):
     """应用配置 — 自动从 .env / 环境变量加载"""
 
     # ── LLM ──
-    llm_api_key: str = "***"
-    llm_base_url: str = "https://api.deepseek.com/v1"
+    llm_api_key: str = ""
+    llm_base_url: str = ""
     lightweight_model: str = "deepseek-chat"
     heavy_model: str = "deepseek-chat"
 
@@ -32,6 +32,17 @@ class Settings(BaseSettings):
     milvus_host: str = "localhost"
     milvus_port: int = 19530
     milvus_collection: str = "knowledge_base"
+
+    # ── Knowledge Data Paths ──
+    knowledge_dir: str = "data/knowledge"
+    faq_files: str = "data/faq_knowledge_base.json,data/faq_consumables.json,data/faq_troubleshooting.json"
+    diagnosis_tree_path: str = ""  # 故障决策树 JSON 路径，为空则使用内置默认
+
+    # ── Business Config ──
+    support_phone: str = ""  # 售后客服热线
+    default_device_model: str = "X30 Pro"
+    company_name: str = "智家科技"
+    agent_name: str = "小智"
 
     # ── Rate Limit ──
     global_rate_limit: int = 100
@@ -46,22 +57,74 @@ class Settings(BaseSettings):
 
     # ── Agent ──
     max_agent_steps: int = 15
-    agent_timeout: int = 30
+    agent_timeout: int = 60  # LoopDetector 硬超时 (秒)
+    loop_semantic_threshold: float = 0.92  # 语义循环检测相似度阈值
+    loop_repeated_tool_threshold: int = 3  # 连续相同工具调用触发警告
+    loop_dead_end_window: int = 5  # 死胡同检测窗口 (最近 N 步)
+
+    # ── Retrieval ──
+    retrieval_l1_threshold: float = 0.75  # L1 语义检索平均分阈值
+    retrieval_l1_min_docs: int = 3  # L1 语义检索最少文档数
+    retrieval_l2_threshold: float = 0.6  # L2 改写检索平均分阈值
+    retrieval_l2_min_docs: int = 2  # L2 改写检索最少文档数
+    retrieval_top_k: int = 5  # 默认返回文档数
+    retrieval_crag_max_retries: int = 2  # C-RAG 最大重试次数
+    retrieval_crag_quality_high: float = 0.5  # C-RAG 高质量阈值
+    retrieval_crag_quality_medium: float = 0.3  # C-RAG 中等质量阈值
+
+    # ── Chunking ──
+    chunk_size: int = 500
+    chunk_overlap: int = 50
+
+    # ── Memory ──
+    short_term_window: int = 6  # 短期记忆窗口 (消息数)
+    cache_lru_capacity: int = 1000  # 本地缓存最大条目
+
+    # ── Citation ──
+    citation_verification_threshold: float = 0.6  # 引用验证相似度阈值
+
+    # ── Troubleshoot ──
+    troubleshoot_max_rounds: int = 5  # 最大诊断轮次
+
+    # ── Reflection ──
+    reflection_max_rounds: int = 3  # 自我反思最大迭代次数
+
+    # ── Reranker ──
+    reranker_backend: str = "local"  # local / llm
+    reranker_model_path: str = ""  # 本地模型路径，为空则从 HuggingFace 下载
 
     # ── Embedding ──
     embedding_backend: str = "local"  # local / ollama / api
-    embedding_model: str = "BAAI/bge-small-zh-v1.5"  # 模型名
-    embedding_base_url: str = ""  # ollama/api 服务地址
+    embedding_model: str = "BAAI/bge-small-zh-v1.5"
+    embedding_base_url: str = ""
+    embedding_api_key: str = ""
+    embedding_fallback_model: str = ""
 
     # ── Server ──
     host: str = "0.0.0.0"
     port: int = 8000
+
+    # ── Observability ──
+    otel_service_name: str = "smart-qa-agent"
+    phoenix_data_dir: str = "D:/ai_data/phoenix"
 
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
         "extra": "ignore",
     }
+
+    def get_knowledge_dir(self) -> str:
+        """返回知识库目录（已解析相对路径）"""
+        return self.knowledge_dir
+
+    def get_support_phone(self) -> str:
+        """返回售后热线，未配置时给出提示"""
+        return self.support_phone or "（请配置售后热线: SUPPORT_PHONE）"
+
+    def get_faq_file_list(self) -> list[str]:
+        """解析 FAQ 文件列表"""
+        return [f.strip() for f in self.faq_files.split(",") if f.strip()]
 
 
 settings = Settings()

@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 
 from smart_qa.api.deps import check_rate_limit, check_security
 from smart_qa.api.stream_handler import SSEStreamHandler
-from smart_qa.deps import get_agent_graph, get_security
+from smart_qa.deps import get_agent_graph, get_security  # DI 容器代理
 from smart_qa.memory.conversation_store import load_messages, save_messages
 from smart_qa.models.chat_schema import ChatRequest, ChatResponse
 from smart_qa.observability.logger import logger

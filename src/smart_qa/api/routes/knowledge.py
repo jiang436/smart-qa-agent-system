@@ -46,7 +46,7 @@ def _ensure_collection(client: MilvusClient) -> str:
         schema.add_field("title", datatype=DataType.VARCHAR, max_length=256)
         schema.add_field("category", datatype=DataType.VARCHAR, max_length=64)
         index_params = client.prepare_index_params()
-        index_params.add_index(field_name="vector", metric_type="COSINE", index_type="IVF_FLAT", params={"nlist": 128})
+        index_params.add_index(field_name="vector", metric_type="COSINE", index_type="HNSW", params={"M": 16, "efConstruction": 256})
         client.create_collection(collection_name=collection_name, schema=schema, index_params=index_params)
         logger.info("Milvus 集合已创建: {} (dim={})", collection_name, embedding.dimension)
     else:
@@ -112,11 +112,9 @@ async def upload_file(file: UploadFile = File(...), db: AsyncSession = Depends(g
         client.flush(collection_name)
 
         # 记录上传到 PostgreSQL
-        import os as _os
-
         record = KnowledgeFile(
             filename=file.filename or "unknown",
-            file_type=_os.path.splitext(file.filename or "unknown")[1].lower().lstrip(".") or "unknown",
+            file_type=os.path.splitext(file.filename or "unknown")[1].lower().lstrip(".") or "unknown",
             chunks=len(chunks),
             dimension=embedding.dimension,
             uploaded_at=datetime.utcnow(),
@@ -128,13 +126,14 @@ async def upload_file(file: UploadFile = File(...), db: AsyncSession = Depends(g
 
         # 增量更新 BM25 索引
         try:
-            from smart_qa.rag.retrieval import _shared_bm25
+            from smart_qa.di import container
 
-            if _shared_bm25 and _shared_bm25.is_built:
+            bm25 = container.get_optional("bm25")
+            if bm25 is not None and bm25.is_built:
                 bm25_texts = [c["content"] for c in chunks if len(c["content"]) > 20]
                 if bm25_texts:
-                    _shared_bm25.add_documents(bm25_texts)
-                    _shared_bm25.save()
+                    bm25.add_documents(bm25_texts)
+                    bm25.save()
         except Exception as e:
             logger.warning("BM25 增量更新失败: {}", e)
 
@@ -226,9 +225,9 @@ async def list_uploaded_files(db: AsyncSession = Depends(get_db)):
 @router.get("/bm25/status")
 async def bm25_status():
     """BM25 索引状态"""
-    from smart_qa.rag.retrieval import _shared_bm25
+    from smart_qa.di import container
 
-    bm25 = _shared_bm25
+    bm25 = container.get_optional("bm25")
     if not bm25 or not bm25.is_built:
         return {"status": "empty", "doc_count": 0, "built_at": "", "terms": 0}
 

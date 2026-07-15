@@ -39,7 +39,10 @@ class MemoryCompressor:
         result = await compressor.compress(messages)
     """
 
-    def __init__(self, llm_client=None, window_size: int = 6):
+    def __init__(self, llm_client=None, window_size: int | None = None):
+        if window_size is None:
+            from smart_qa.config import settings
+            window_size = settings.short_term_window
         self.llm = llm_client
         self.window_size = window_size
 

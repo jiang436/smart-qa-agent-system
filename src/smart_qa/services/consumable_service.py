@@ -1,9 +1,31 @@
-"""耗材管理服务 — X30 Pro 全配件目录"""
+"""耗材管理服务 — X30 Pro 全配件目录
 
+优先从 data/consumable_catalog.json 加载，回退到内置默认数据。
+"""
+
+import json
+import os
 import re
 
-# X30 Pro 全配件数据库
-CATALOG = {
+from smart_qa.config import settings
+
+
+def _load_catalog() -> dict:
+    """加载耗材目录（外部 JSON 优先，内置兜底）"""
+    json_path = "data/consumable_catalog.json"
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("catalog"):
+                return data
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {"catalog": _BUILTIN_CATALOG, "part_synonyms": _BUILTIN_PART_SYNONYMS}
+
+
+def _build_builtin_catalog() -> dict:
+    return {
     "清洁刷组": {
         "side_brush": {
             "name": "X30 Pro 原装边刷",
@@ -228,7 +250,9 @@ CATALOG = {
     },
 }
 
-PART_SYNONYMS = {
+
+# ── 内置默认同义词映射（外部 JSON 不可用时的兜底）──
+_BUILTIN_PART_SYNONYMS = {
     "边刷": "side_brush",
     "边扫": "side_brush",
     "侧刷": "side_brush",
@@ -287,34 +311,44 @@ PART_SYNONYMS = {
 }
 
 
+# ── 模块级加载（外部 JSON 优先，内置兜底）──
+_catalog_data = _load_catalog()
+CATALOG = _catalog_data["catalog"]
+PART_SYNONYMS = _catalog_data["part_synonyms"]
+
+
 class ConsumableService:
     """耗材管理服务 — X30 Pro"""
 
-    DEVICE_MODEL = "X30 Pro"
+    DEVICE_MODEL = settings.default_device_model
+
+    def __init__(self):
+        self._catalog = CATALOG
+        self._part_synonyms = PART_SYNONYMS
 
     def identify_part(self, query: str) -> str | None:
-        for keyword, pt in PART_SYNONYMS.items():
+        for keyword, pt in self._part_synonyms.items():
             if keyword.lower() in query.lower():
                 return pt
         m = re.search(r"(边刷|主刷|拖布|滤网|集尘袋|清洁液|套装)", query)
-        return PART_SYNONYMS.get(m.group(0)) if m else None
+        return self._part_synonyms.get(m.group(0)) if m else None
 
     def get_product(self, part_type: str) -> dict | None:
-        for cat in CATALOG.values():
+        for cat in self._catalog.values():
             if part_type in cat:
                 return cat[part_type]
         return None
 
     def get_category_products(self, category: str) -> list[dict]:
-        cat = CATALOG.get(category, {})
+        cat = self._catalog.get(category, {})
         return list(cat.values())
 
     def get_all_categories(self) -> list[str]:
-        return list(CATALOG.keys())
+        return list(self._catalog.keys())
 
     def get_all_products(self) -> list[dict]:
         all_items = []
-        for _cat_name, items in CATALOG.items():
+        for _cat_name, items in self._catalog.items():
             for key, item in items.items():
                 item["part_key"] = key
                 all_items.append(item)

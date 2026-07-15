@@ -1,37 +1,80 @@
 """LangGraph StateGraph 主图 — 编排所有 Agent + MemorySaver + LangGraph Store 长期记忆"""
 
+from __future__ import annotations
+
+import json
+import re
+from typing import Annotated, Any
+
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
+
+# 兼容 LangGraph >= 1.0 的 InjectedStore（旧版本无此注解）
+try:
+    from langgraph.store.base import InjectedStore
+except ImportError:
+    InjectedStore = None  # type: ignore
+
+# LangGraph node config 类型（兼容各版本）
+try:
+    from langgraph.types import RunnableConfig  # noqa: F811
+except ImportError:
+    try:
+        from langgraph.runtime import RunnableConfig  # noqa: F811
+    except ImportError:
+        RunnableConfig = None  # type: ignore
 
 from smart_qa.agent.agents.router_agent import RouterAgent
 from smart_qa.agent.guards.loop_detector import LoopDetector
 from smart_qa.agent.state import AgentState
+from smart_qa.config import settings
 from smart_qa.observability.logger import logger
 from smart_qa.scenarios.consumables_scenario import ConsumablesScenario
 from smart_qa.scenarios.device_control_scenario import DeviceControlScenario
 from smart_qa.scenarios.qa_scenario import QAScenario
 from smart_qa.scenarios.report_scenario import ReportScenario
+from smart_qa.scenarios.sql_scenario import SQLScenario
 from smart_qa.scenarios.troubleshoot_scenario import TroubleshootScenario
 
 _memory = MemorySaver()
 
 # LangGraph Store — 延迟初始化（web.py lifespan 中 setup）
 _store = None
-_store_cm = None
+
+# 构建 store 类型注解（兼容 LangGraph 各版本）
+_StoreAnnotation = Annotated[object, InjectedStore()] if InjectedStore is not None else None
 
 
-def set_store(store):
-    """注入 LangGraph Store 实例（由 web.py lifespan 调用）"""
+def set_store(store: Any) -> None:
+    """注入 LangGraph Store 实例（由 web.py lifespan 调用）
+
+    同时注册到 DI 容器，方便其他模块获取。
+    """
     global _store
     _store = store
+    try:
+        from smart_qa.di import container
+        container.register("store", store)
+    except Exception:
+        pass
     logger.info("LangGraph Store 已注入: {}", type(store).__name__)
 
 
-def get_store():
-    return _store
+def get_store() -> Any | None:
+    """获取 LangGraph Store 实例（优先全局引用，回退到 DI 容器）"""
+    global _store
+    if _store is not None:
+        return _store
+    try:
+        from smart_qa.di import container
+        if container.has("store"):
+            return container.get("store")
+    except Exception:
+        pass
+    return None
 
 
-async def memory_reader_node(state: dict, config, *, store) -> dict:
+async def memory_reader_node(state: dict[str, Any], config: RunnableConfig | None = None, *, store: _StoreAnnotation = None) -> dict[str, Any]:
     """记忆读取节点 — 从 LangGraph Store 加载用户画像
 
     在 router 之前执行，将持久化的用户信息注入 state。
@@ -40,12 +83,17 @@ async def memory_reader_node(state: dict, config, *, store) -> dict:
     Store key:       'profile'
     Store value:     dict(device_model, preferred_mode, home_layout, tags, …)
     """
+    # 优先用 LangGraph 注入的 store，回退到全局实例
+    _active_store = store if store is not None else _store
+    if _active_store is None:
+        return state
+
     user_id = state.get("user_id", "anonymous")
     if not user_id or user_id in ("anonymous", "", "default"):
         return state
 
     try:
-        item = await store.aget(("users", user_id), "profile")
+        item = await _active_store.aget(("users", user_id), "profile")
         if item and item.value:
             state["user_profile"] = item.value
             logger.debug("Store 加载用户画像 user={} profile={}", user_id, item.value)
@@ -55,13 +103,16 @@ async def memory_reader_node(state: dict, config, *, store) -> dict:
     return state
 
 
-async def memory_writer_node(state: dict, config, *, store) -> dict:
+async def memory_writer_node(state: dict[str, Any], config: RunnableConfig | None = None, *, store: _StoreAnnotation = None) -> dict[str, Any]:
     """记忆写入节点 — 从对话中提取用户画像并写入 LangGraph Store
 
     在 guard_check 之后、END 之前执行。
     只写入 LTM 层级的确信信息（设备型号、偏好、户型等）。
     写入失败不阻塞主流程。
     """
+    _active_store = store if store is not None else _store
+    if _active_store is None:
+        return state
     user_id = state.get("user_id", "anonymous")
     if not user_id or user_id in ("anonymous", "", "default"):
         return state
@@ -73,17 +124,41 @@ async def memory_writer_node(state: dict, config, *, store) -> dict:
     if not query:
         return state
 
-    # 模式匹配提取
-    device_model = _extract_device(query)
-    preferred_mode = _extract_preferred_mode(query)
-    home_layout = _extract_home_layout(query)
+    # LLM 结构化提取
+    try:
+        from smart_qa.di import container
+
+        llm = container.get("llm")
+        prompt = (
+            "从用户消息中提取以下信息，只输出 JSON，没有的字段填 null：\n"
+            "1. device_model: 扫地机器人型号 (X30 Pro/X20 Pro/T10/R10 等)\n"
+            "2. preferred_mode: 偏好模式 (quiet/strong/standard)\n"
+            "3. home_layout: 户型描述 (如\"三室两厅\")\n\n"
+            f"用户消息: {query}\n"
+            'JSON: {"device_model": ..., "preferred_mode": ..., "home_layout": ...}'
+        )
+        resp = await llm.ainvoke(prompt)
+        text = resp.content if hasattr(resp, "content") else str(resp)
+        # 提取 JSON 块
+        json_match = re.search(r"\{[^{}]*\}", text)
+        if json_match:
+            extracted = json.loads(json_match.group(0))
+        else:
+            extracted = {}
+
+        device_model = extracted.get("device_model")
+        preferred_mode = extracted.get("preferred_mode")
+        home_layout = extracted.get("home_layout")
+    except Exception as e:
+        logger.debug("LLM 用户画像提取失败: {}", e)
+        device_model = preferred_mode = home_layout = None
 
     if not any([device_model, preferred_mode, home_layout]):
         return state
 
     # 加载现有画像，合并后写入
     try:
-        item = await store.aget(("users", user_id), "profile")
+        item = await _active_store.aget(("users", user_id), "profile")
         profile = item.value.copy() if (item and item.value) else {}
     except Exception:
         profile = {}
@@ -113,7 +188,7 @@ async def memory_writer_node(state: dict, config, *, store) -> dict:
         profile.setdefault("visits", 0)
         profile["visits"] = profile.get("visits", 0) + 1
         try:
-            await store.aput(("users", user_id), "profile", profile)
+            await _active_store.aput(("users", user_id), "profile", profile)
             logger.info("Store 写入 user={} profile={}", user_id, profile)
         except Exception as e:
             logger.warning("Store 写入失败 user={} err={}", user_id, e)
@@ -135,10 +210,10 @@ _MODE_KEYWORDS = {
     "标准模式": "standard",
     "标准": "standard",
 }
-_HOME_PATTERN = __import__("re").compile(r"([一二两三四五六七八九十\d]+)[室房](?:[一二两三四五六七八九十\d]+厅)?")
+_HOME_PATTERN = re.compile(r"([一二两三四五六七八九十\d]+)[室房](?:[一二两三四五六七八九十\d]+厅)?")
 
 
-def _extract_user_query(state: dict) -> str:
+def _extract_user_query(state: dict[str, Any]) -> str:
     messages = state.get("messages", [])
     for msg in reversed(messages):
         if isinstance(msg, dict):
@@ -176,7 +251,7 @@ def _extract_home_layout(text: str) -> str | None:
 # ═══════════════════════════════════════════
 
 
-async def handle_general(state: dict) -> dict:
+async def handle_general(state: dict[str, Any]) -> dict[str, Any]:
     """通用场景 — 分层响应规则
 
     三层响应逻辑:
@@ -220,9 +295,9 @@ async def handle_general(state: dict) -> dict:
 
     try:
         from smart_qa.agent.persona import get_system_prompt
-        from smart_qa.deps import get_llm_client
+        from smart_qa.di import container
 
-        llm = get_llm_client()
+        llm = container.get("llm")
         persona = get_system_prompt("general")
         is_fresh = len(messages) <= 1
         history_text = ""
@@ -259,12 +334,17 @@ async def handle_general(state: dict) -> dict:
 # ═══════════════════════════════════════════
 
 
-def build_graph(llm_client=None) -> StateGraph:
+def build_graph(llm_client: Any = None) -> StateGraph:
     """构建 Agent 编排图（MemorySaver + LangGraph Store 长期记忆）"""
     logger.info("构建 LangGraph 编排图")
 
     router_agent = RouterAgent(llm_client=llm_client)
-    loop_detector = LoopDetector(max_steps=15)
+    loop_detector = LoopDetector(
+        max_steps=settings.max_agent_steps,
+        max_execution_time=settings.agent_timeout,
+        semantic_threshold=settings.loop_semantic_threshold,
+        repeated_tool_threshold=settings.loop_repeated_tool_threshold,
+    )
     workflow = StateGraph(AgentState)
 
     workflow.add_node("memory_reader", memory_reader_node)
@@ -274,6 +354,7 @@ def build_graph(llm_client=None) -> StateGraph:
     workflow.add_node("consumables", ConsumablesScenario.run)
     workflow.add_node("device_control", DeviceControlScenario.run)
     workflow.add_node("report", ReportScenario.run)
+    workflow.add_node("sql_query", SQLScenario.run)
     workflow.add_node("general_handler", handle_general)
     workflow.add_node("guard_check", loop_detector.check)
     workflow.add_node("memory_writer", memory_writer_node)
@@ -291,6 +372,7 @@ def build_graph(llm_client=None) -> StateGraph:
             "consumables": "consumables",
             "device_control": "device_control",
             "report": "report",
+            "sql_query": "sql_query",
             "general": "general_handler",
             "done": "guard_check",
         },
@@ -301,6 +383,7 @@ def build_graph(llm_client=None) -> StateGraph:
     workflow.add_edge("consumables", "guard_check")
     workflow.add_edge("device_control", "guard_check")
     workflow.add_edge("report", "guard_check")
+    workflow.add_edge("sql_query", "guard_check")
     workflow.add_edge("general_handler", "guard_check")
 
     workflow.add_conditional_edges(

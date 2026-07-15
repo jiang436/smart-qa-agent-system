@@ -36,3 +36,9 @@ fix_*.py
 uploads/
 
 *.pkl
+
+# 评测报告
+src/smart_qa/evaluation/reports/
+
+# 前端构建产物
+frontend/tsconfig.tsbuildinfo

@@ -66,20 +66,31 @@ class LoopDetector:
         self.semantic_threshold = semantic_threshold
         self.repeated_tool_threshold = repeated_tool_threshold
 
-        # 运行时追踪
-        self._step_history: list[dict] = []
-        self._start_time: float | None = None
+    # ── Per-request state keys (stored in state dict, not instance vars) ──
+    _HISTORY_KEY = "_loop_step_history"
+    _START_TIME_KEY = "_loop_start_time"
+
+    def _get_history(self, state: dict) -> list[dict]:
+        """获取当前请求的步骤历史（存储在 state 中，线程安全）"""
+        return state.setdefault(self._HISTORY_KEY, [])
+
+    def _get_start_time(self, state: dict) -> float | None:
+        """获取当前请求的开始时间"""
+        return state.get(self._START_TIME_KEY)
+
+    def _set_start_time(self, state: dict, t: float) -> None:
+        state[self._START_TIME_KEY] = t
 
     # ═══════════════════════════════════════════
     # 主入口
     # ═══════════════════════════════════════════
 
     async def check(self, state: dict) -> dict:
-        """执行完整防循环检测"""
-        # 每次新调用重置（图是单例，状态不能跨请求累积）
+        """执行完整防循环检测（线程安全：追踪状态存储在 state dict 中）"""
+        # 每次新会话重置（step <= 1 视为新请求开始）
         if state.get("step", 0) <= 1:
-            self._step_history.clear()
-            self._start_time = time.time()
+            self._get_history(state).clear()
+            self._set_start_time(state, time.time())
 
         state["step"] = state.get("step", 0) + 1
         self._record_step(state)
@@ -117,8 +128,9 @@ class LoopDetector:
             )
 
         # 壁钟超时
-        if self._start_time:
-            elapsed = time.time() - self._start_time
+        start_time = self._get_start_time(state)
+        if start_time:
+            elapsed = time.time() - start_time
             timeout = state.get("max_execution_time", self.max_execution_time)
             if elapsed > timeout:
                 return LoopResult(
@@ -223,7 +235,7 @@ class LoopDetector:
         检查最近 N 步中, retrieved_docs 是否持续为空且 final_answer 无进展。
         这表明 Agent 在不断调工具但什么都查不到。
         """
-        history = self._step_history[-5:]
+        history = self._get_history(state)[-5:]
         if len(history) < 4:
             return LoopResult(detected=False)
 
@@ -249,7 +261,7 @@ class LoopDetector:
     def _apply_result(self, state: dict, result: LoopResult):
         """根据检测结果更新 state"""
         logger.warning("防循环触发 action={} reason={}", result.action, result.reason)
-        state["loop_detected"]
+        state["loop_detected"] = True
         state["loop_reason"] = result.reason
         state["loop_action"] = result.action
 
@@ -276,11 +288,12 @@ class LoopDetector:
     # ═══════════════════════════════════════════
 
     def _record_step(self, state: dict):
-        """记录当前步骤到历史"""
+        """记录当前步骤到 state 中的历史（线程安全）"""
         messages = state.get("messages", [])
         last_msg = messages[-1] if messages else {}
 
-        self._step_history.append(
+        history = self._get_history(state)
+        history.append(
             {
                 "step": state.get("step", 0),
                 "tool_calls_history": list(state.get("tool_calls_history", [])),
@@ -292,8 +305,8 @@ class LoopDetector:
         )
 
         # 只保留最近 20 步
-        if len(self._step_history) > 20:
-            self._step_history = self._step_history[-15:]
+        if len(history) > 20:
+            state[self._HISTORY_KEY] = history[-15:]
 
     # ═══════════════════════════════════════════
     # 调度节点
@@ -320,7 +333,13 @@ class LoopDetector:
 
         return "continue"
 
-    def reset(self):
-        """重置检测器状态 (新会话时调用)"""
-        self._step_history.clear()
-        self._start_time = None
+    def reset(self, state: dict | None = None):
+        """重置检测器状态（新会话时调用）
+
+        Args:
+            state: 可选，传入时清除该 state 中的追踪数据；
+                   为 None 时兼容旧代码（无操作，因为状态已迁移到 state dict）。
+        """
+        if state is not None:
+            state.pop(self._HISTORY_KEY, None)
+            state.pop(self._START_TIME_KEY, None)
