@@ -1,4 +1,5 @@
 """RouterAgent 意图分类测试（关键词模式）"""
+
 from smart_qa.agent.agents.router_agent import RouterAgent
 
 

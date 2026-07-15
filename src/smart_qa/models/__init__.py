@@ -7,7 +7,9 @@ from .knowledge_file import KnowledgeFile
 from .search_log import SearchFeedback, SearchLog
 from .session import Session
 from .usage import DeviceUsageLog
+from .user import User, UserSession
 from .user_profile import UserProfile
+from .virtual_order import LogisticsEvent, VirtualOrder
 
 __all__ = [
     "Base",
@@ -16,7 +18,11 @@ __all__ = [
     "ConsumableOrder",
     "DeviceUsageLog",
     "KnowledgeFile",
-    "UserProfile",
     "SearchLog",
     "SearchFeedback",
+    "UserProfile",
+    "User",
+    "UserSession",
+    "VirtualOrder",
+    "LogisticsEvent",
 ]

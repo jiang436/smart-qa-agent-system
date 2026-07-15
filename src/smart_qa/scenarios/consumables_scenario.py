@@ -1,6 +1,6 @@
 """耗材管理场景 — 基于设备 + 耗材兼容表的配件推荐 + HITL 确认下单
 
-核心流程（两轮对话）:
+核心流程:
 
   第一轮: 推荐
     1. 设备识别 → 2. 耗材兼容表查询 → 3. 推荐生成
@@ -11,8 +11,28 @@
     1. RouterAgent 检测到 pending_purchase → 路由到 consumables
     2. ConsumablesScenario 检测到 pending_purchase
     3. 判断用户意图 (yes/no)
-    4. yes → 创建订单 (PostgreSQL) → 返回确认信息
+    4. yes → 创建虚拟订单 → 自动模拟物流 → 返回确认信息
     5. no → 取消 → 返回取消信息
+
+  中途: 物流查询
+    用户说「查订单」「物流状态」时拦截查询最新物流事件
+
+⚠️ 订单与物流均为模拟数据
+==============================
+用户确认购买后，系统创建 VirtualOrder（虚拟订单）并通过
+OrderSimulationService 自动推进物流环节。
+
+模拟内容包括：
+  - 订单号（ORD + 随机字符）
+  - 快递单号（SF + 随机字符）
+  - 物流事件（5 种预设模板按顺序播放）
+  - 价格（演示数值，无真实支付）
+
+物流场景随机选择（下单时决定）：
+  normal(正常送达) 80% | damaged(损坏) 8% | lost(丢失) 5%
+  out_of_stock(缺货) 2% | returned(退货) 5%
+
+所有数据仅用于演示对话闭环，不连接任何真实电商或物流系统。
 """
 
 from __future__ import annotations
@@ -25,10 +45,12 @@ from smart_qa.services.consumable_service import ConsumableService
 
 
 class ConsumablesScenario:
-    """耗材管理场景
+    """耗材管理场景（模拟订单系统）
 
     用法:
         result_state = await ConsumablesScenario.run(state)
+
+    ⚠️ 订单与物流均为模拟数据，非真实交易。
     """
 
     _consumable_service: ConsumableService | None = None
@@ -44,7 +66,8 @@ class ConsumablesScenario:
         """执行耗材管理场景
 
         状态机:
-          init → 收集设备信息 → 查询兼容表 → 推荐 → HITL 确认 → 创建订单 → 完成
+          init → 收集设备信息 → 查询兼容表 → 推荐 → HITL 确认 → 创建虚拟订单 → 完成
+          中途可查询订单物流状态
         """
         start = time.time()
         query = ConsumablesScenario._extract_query(state)
@@ -55,18 +78,61 @@ class ConsumablesScenario:
             state["final_answer"] = "请问您需要查询哪种耗材？或者告诉我您的设备型号，我帮您查兼容的配件。"
             return state
 
+        # ── 订单/物流查询（拦截物流相关关键词）──
+        order_keywords = ["订单", "物流", "到哪了", "快递", "发货", "运单", "查一下", "跟踪", "签收", "收到"]
+        is_order_query = any(kw in query for kw in order_keywords)
+        if is_order_query:
+            try:
+                from sqlalchemy import select
+
+                from smart_qa.database.engine import get_session_factory
+                from smart_qa.models.virtual_order import VirtualOrder
+
+                factory = get_session_factory()
+                async with factory() as session:
+                    result = await session.execute(
+                        select(VirtualOrder)
+                        .where(VirtualOrder.user_id == user_id)
+                        .order_by(VirtualOrder.created_at.desc())
+                        .limit(1)
+                    )
+                    order = result.scalar_one_or_none()
+                    if order:
+                        from smart_qa.models.virtual_order import LogisticsEvent
+
+                        event_result = await session.execute(
+                            select(LogisticsEvent)
+                            .where(LogisticsEvent.order_id == order.order_id)
+                            .order_by(LogisticsEvent.id.desc())
+                            .limit(1)
+                        )
+                        last_event = event_result.scalar_one_or_none()
+
+                        from smart_qa.models.order_schema import STATUS_LABELS
+
+                        label = STATUS_LABELS.get(order.status, order.status)
+                        msg = (
+                            f"📋 订单状态查询\n"
+                            f"订单号: {order.order_id}\n"
+                            f"商品: {order.part_name}\n"
+                            f"状态: {label}\n"
+                            f"快递: {order.express_company or '待发货'} {order.tracking_number or ''}\n"
+                        )
+                        if last_event:
+                            msg += f"最新: {last_event.message}\n"
+                        msg += "\n回复「继续购买」返回耗材选购，或对我说「推进物流」看看下一步。"
+                        state["final_answer"] = msg
+                        return state
+                    else:
+                        state["final_answer"] = "您目前没有进行中的订单。需要购买耗材吗？告诉我您需要什么配件。"
+                        return state
+            except Exception as e:
+                logger.warning("订单查询失败: {}", e)
+                # 降级到正常耗材流程
+                pass
+
         user_profile = state.get("user_profile", {})
         task_memory = state.get("task_memory") or {}
-
-        # ═══════════════════════════════════════
-        # Phase 2: HITL 确认 — 用户对推荐做出回应
-        # ═══════════════════════════════════════
-        pending = task_memory.get("pending_purchase")
-        if pending:
-            result = await ConsumablesScenario._handle_approval(user_id, query, pending, state)
-            elapsed = time.time() - start
-            logger.info("耗材 HITL 完成 decision={} latency={:.1f}s", result.get("decision"), elapsed)
-            return result
 
         # ═══════════════════════════════════════
         # Phase 1: 推荐
@@ -149,29 +215,38 @@ class ConsumablesScenario:
 
     @staticmethod
     async def _place_order(user_id: str, pending: dict, state: dict) -> dict:
-        """创建订单"""
-        from smart_qa.database.postgres import PostgresClient
+        """创建虚拟订单并自动模拟物流
 
-        device_model = pending.get("device_model", "X30 Pro")
-        consumable_type = pending.get("consumable_type", "")
+        下单后自动完成确认、发货，并前进3步物流环节。
+        物流场景随机选择（正常80%、损坏8%、丢失5%、缺货2%、退货5%）。
+        """
         product_name = pending.get("product_name", "")
+        price = pending.get("price", 0)
+        consumable_type = pending.get("consumable_type", "")
 
         try:
             from smart_qa.database.engine import get_session_factory
-            from smart_qa.database.postgres import PostgresClient
+            from smart_qa.services.order_simulation import OrderSimulationService
 
             factory = get_session_factory()
             async with factory() as session:
-                order = await PostgresClient.create_order(
+                order = await OrderSimulationService.create_order(
                     db=session,
                     user_id=user_id,
-                    device_model=device_model,
                     part_type=consumable_type,
                     part_name=product_name,
-                    quantity=1,
-                    price=pending.get("price"),
-                    source="HITL",
+                    price=price,
                 )
+                order = await OrderSimulationService.confirm_order(session, order)
+
+                import random
+
+                scenarios = ["normal"] * 80 + ["damaged"] * 8 + ["lost"] * 5 + ["out_of_stock"] * 2 + ["returned"] * 5
+                scenario = random.choice(scenarios)
+
+                order = await OrderSimulationService.start_shipping(session, order, scenario)
+                for _ in range(3):
+                    order, _event = await OrderSimulationService.advance_logistics(session, order, scenario)
                 await session.commit()
 
             state["task_memory"] = {
@@ -179,10 +254,11 @@ class ConsumablesScenario:
             }
             state["final_answer"] = (
                 f"✅ 订单已创建！\n"
-                f"📦 {product_name}\n"
-                f"💰 ¥{pending.get('price', '?')}\n"
-                f"📋 订单号: {order.order_id}\n\n"
-                f"预计3-5个工作日送达，请注意查收。"
+                f"📦 {product_name} × 1\n"
+                f"💰 ¥{price}\n"
+                f"📋 订单号: {order.order_id}\n"
+                f"📮 快递: {order.express_company} ({order.tracking_number})\n\n"
+                f"您可以随时对我说「查订单」或「物流状态」来跟踪最新进度。"
             )
         except Exception as e:
             logger.error("订单创建失败: {}", e)

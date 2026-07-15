@@ -1,4 +1,5 @@
 """Agent 核心测试 — Persona + state_utils + LoopDetector.decide"""
+
 from smart_qa.agent.guards.loop_detector import LoopDetector
 from smart_qa.agent.persona import get_greeting_reply, is_out_of_scope, is_pure_greeting
 from smart_qa.agent.state_utils import extract_user_query, get_messages

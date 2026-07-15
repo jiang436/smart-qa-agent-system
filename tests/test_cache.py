@@ -1,4 +1,5 @@
 """语义缓存测试"""
+
 from smart_qa.memory.cache import SemanticCache
 
 

@@ -1,16 +1,23 @@
 <script setup lang="ts">
 import { useRoute } from 'vue-router'
 import { computed } from 'vue'
+import { useAppStore } from '@/stores/app'
 
 const route = useRoute()
+const appStore = useAppStore()
 
-const navItems = [
-  { path: '/', label: '智能对话', icon: '💬' },
-  { path: '/troubleshoot', label: '故障排查', icon: '🔧' },
-  { path: '/consumables', label: '耗材管理', icon: '📦' },
-  { path: '/report', label: '使用报告', icon: '📊' },
-  { path: '/admin', label: '管理后台', icon: '⚙️' },
-]
+const navItems = computed(() => {
+  const items = [
+    { path: '/', label: '智能对话', icon: '💬' },
+    { path: '/troubleshoot', label: '故障排查', icon: '🔧' },
+    { path: '/consumables', label: '耗材管理', icon: '📦' },
+    { path: '/report', label: '使用报告', icon: '📊' },
+  ]
+  if (appStore.isAdmin()) {
+    items.push({ path: '/admin', label: '管理后台', icon: '⚙️' })
+  }
+  return items
+})
 
 const isActive = (path: string) => {
   if (path === '/') return route.path === '/'

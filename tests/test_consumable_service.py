@@ -1,4 +1,5 @@
 """耗材服务测试"""
+
 from smart_qa.services.consumable_service import ConsumableService
 
 

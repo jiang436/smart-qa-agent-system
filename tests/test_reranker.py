@@ -1,4 +1,5 @@
 """Reranker 测试 — 启发式降级模式"""
+
 from smart_qa.rag.reranker import Reranker
 
 

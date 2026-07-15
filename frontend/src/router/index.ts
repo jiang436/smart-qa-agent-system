@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { useAppStore } from '@/stores/app'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -26,9 +27,21 @@ const router = createRouter({
     {
       path: '/admin',
       name: 'admin',
+      meta: { requiresAdmin: true },
       component: () => import('@/views/AdminView.vue'),
     },
   ],
+})
+
+router.beforeEach((to, _from, next) => {
+  if (to.meta.requiresAdmin) {
+    const appStore = useAppStore()
+    if (!appStore.isAdmin()) {
+      next({ name: 'chat' })
+      return
+    }
+  }
+  next()
 })
 
 export default router

@@ -1,4 +1,5 @@
 """Chunking 分片测试"""
+
 from smart_qa.rag.chunking import SmartDocumentSplitter
 
 

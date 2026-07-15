@@ -1,4 +1,5 @@
 """引用溯源 + 幻觉防护测试 — CitationTracker + HallucinationGuard"""
+
 from smart_qa.rag.citation import CitationTracker, HallucinationGuard
 
 
@@ -44,9 +45,11 @@ class TestCitationTracker:
         assert len(self.tracker._documents) == 0
 
     def test_register_docs_then_build_with_sentence_hit(self):
-        self.tracker.register_docs([
-            {"content": "X30 Pro 支持最大200平方米的清扫面积", "source": "user_manual"},
-        ])
+        self.tracker.register_docs(
+            [
+                {"content": "X30 Pro 支持最大200平方米的清扫面积", "source": "user_manual"},
+            ]
+        )
         result = self.tracker.build_cited_answer("X30 Pro多大面积", "支持最大200平方米")
         # 句子过短(<5)会跳过，但这里有足够的匹配内容
         assert "text" in result

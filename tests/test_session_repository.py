@@ -1,4 +1,5 @@
 """Session Repository 测试 — 使用 InMemorySessionRepository"""
+
 import pytest
 
 from smart_qa.repositories.session_repository import InMemorySessionRepository
@@ -58,4 +59,5 @@ async def test_load_empty_messages(repo):
 @pytest.mark.asyncio
 async def test_session_repository_protocol_check(repo):
     from smart_qa.repositories.session_repository import SessionRepository
+
     assert isinstance(repo, SessionRepository)
