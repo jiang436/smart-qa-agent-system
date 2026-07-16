@@ -17,21 +17,19 @@ Usage:
 
 from collections.abc import AsyncGenerator
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
-    create_async_engine,
+    create_async_engine,  # noqa: F401 — used in init_db() but ruff's analysis misses it
 )
 
 from smart_qa.config import settings
+from smart_qa.models.user import User
 from smart_qa.observability.logger import logger
 
-# ── 模块级单例 ──
-# 在 init_db() 中初始化，之后通过 get_db() / get_session_factory() 使用。
-# 注意：不在 `__init__.py` 中公开，防止导入时意外触发。
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker | None = None
 
@@ -42,20 +40,14 @@ async def init_db(dsn: str | None = None):
     在 FastAPI 应用启动时由 web.py lifespan 调用。
     只会执行一次（通过模块级全局变量保证）。
 
-    参数:
-        dsn: PostgreSQL 连接字符串
-             形如 "postgresql+asyncpg://user:pass@host:5432/db"
-             为 None 时从 settings.postgres_dsn 读取。
-
     流程:
-        1. create_async_engine → 连接池 (pool_size=10, max_overflow=20, pool_pre_ping)
-        2. async_sessionmaker → 会话工厂 (expire_on_commit=False 防序列化后过期)
+        1. create_async_engine → 连接池
+        2. async_sessionmaker → 会话工厂
         3. Base.metadata.create_all → 自动建表
-        4. ALTER TABLE sessions ADD COLUMN messages → 历史迁移（列已有时忽略）
+        4. 创建默认管理员 admin/admin（仅首次启动时）
 
-    异常处理:
-        连接失败：此函数抛出异常，由上层 lifespan 捕获并 log warning，系统降级运行。
-        迁移列重复：仅 ProgrammingError("already exists") 静默忽略，其他异常 log warning。
+    ALTER TABLE 迁移使用同步引擎单独连接执行，
+    不污染 async 连接的事务状态。
     """
     global _engine, _session_factory
     dsn = dsn or settings.postgres_dsn
@@ -66,12 +58,30 @@ async def init_db(dsn: str | None = None):
 
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+        # ── 默认管理员（仅首次启动时创建） ──
         try:
-            await conn.execute(text("ALTER TABLE sessions ADD COLUMN messages TEXT"))
+            result = await conn.execute(select(User).where(User.username == "admin"))
+            if not result.fetchone():
+                password_hash, salt = User.hash_password("admin")
+                await conn.execute(
+                    text("INSERT INTO users (username, password_hash, role, salt, display_name, created_at) VALUES (:u, :h, :r, :s, :d, :c)"),
+                    {"u": "admin", "h": password_hash, "r": "admin", "s": salt, "d": "管理员", "c": __import__("datetime").datetime.utcnow()},
+                )
+                logger.info("默认管理员已创建: admin / admin")
+        except Exception as e:
+            logger.debug("管理员创建跳过: {}", e)
+
+    # ── 历史迁移：单独 async 连接执行，不污染主事务 ──
+    try:
+        async with _engine.begin() as mig_conn:
+            await mig_conn.execute(text("ALTER TABLE sessions ADD COLUMN messages TEXT"))
             logger.info("数据库迁移: sessions.messages 列已添加")
-        except ProgrammingError as e:
-            if "already exists" not in str(e).lower():
-                logger.warning("数据库迁移异常（非列重复）: {}", e)
+    except ProgrammingError as e:
+        if "already exists" not in str(e).lower():
+            logger.warning("数据库迁移异常（非列重复）: {}", e)
+    except Exception:
+        pass
 
     logger.info("数据库已初始化，所有表已就绪")
 
@@ -81,10 +91,6 @@ async def close_db():
 
     在 FastAPI 应用关闭时由 web.py lifespan 调用。
     释放所有连接资源，清空引擎引用。
-
-    注意事项:
-        await _engine.dispose() 可能阻塞等待活跃事务完成。
-        调用后 _engine 和 _session_factory 置为 None。
     """
     global _engine, _session_factory
     if _engine:
@@ -95,47 +101,14 @@ async def close_db():
 
 
 def get_session_factory() -> async_sessionmaker:
-    """获取会话工厂（供后台任务 / 流式处理使用）
-
-    区别于 get_db()（请求级会话，由 FastAPI Depends 管理生命周期），
-    此函数返回 async_sessionmaker 实例，调用方自行管理会话生命周期。
-
-    返回值:
-        async_sessionmaker[AsyncSession] — 使用方式：
-            async with get_session_factory()() as session:
-                ...
-
-    异常:
-        RuntimeError: 数据库未初始化时调用（需先调用 init_db()）
-
-    典型使用场景:
-        - SSE 流式处理的异步持久化（stream_handler.py）
-        - 定时任务 / 运维脚本
-        - 需在独立事务中执行的批量操作
-    """
+    """获取会话工厂（供后台任务 / 流式处理使用）"""
     if not _session_factory:
         raise RuntimeError("数据库未初始化，请先调用 init_db()")
     return _session_factory
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """FastAPI 依赖注入函数: 获取数据库会话
-
-    通过 FastAPI 的 Depends() 机制注入到路由处理函数中。
-    自动管理事务生命周期：yield 前创建会话，路由返回后 commit，异常时 rollback。
-
-    用法:
-        @router.get("/items")
-        async def get_items(db: AsyncSession = Depends(get_db)):
-            ...
-
-    Yields:
-        AsyncSession — SQLAlchemy 异步会话实例
-
-    异常:
-        RuntimeError: 数据库未初始化时调用
-        路由内部异常: 自动 rollback 并向上传播
-    """
+    """FastAPI 依赖注入函数: 获取数据库会话"""
     if not _session_factory:
         raise RuntimeError("数据库未初始化，请先调用 init_db()")
     async with _session_factory() as session:

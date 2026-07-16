@@ -46,11 +46,12 @@ const categories = Object.keys(catalog)
 
 <template>
   <div class="flex flex-col h-full">
-    <header class="flex items-center px-5 py-3 bg-white border-b border-slate-200 shrink-0">
+    <header class="flex items-center justify-between px-5 py-3 bg-white border-b border-slate-200 shrink-0">
       <div>
         <h1 class="text-sm font-semibold text-slate-800">X30 Pro 耗材配件</h1>
         <p class="text-[11px] text-slate-400">全部42款配件 · 原厂质量保证</p>
       </div>
+      <a href="/orders" class="text-xs text-accent hover:underline">查看订单 →</a>
     </header>
 
     <div class="flex-1 overflow-hidden flex">

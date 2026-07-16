@@ -12,6 +12,64 @@ export interface ChatResponse {
   intent: string
 }
 
+// ── Auth ──
+
+export interface AuthRequest {
+  username: string
+  password: string
+}
+
+export interface AuthResponse {
+  token: string
+  user_id: string
+  username: string
+  role: string
+  display_name: string
+}
+
+export interface UserInfo {
+  user_id: string
+  username: string
+  role: string
+  display_name: string
+}
+
+export async function login(req: AuthRequest): Promise<AuthResponse> {
+  const r = await fetch(`${BASE}/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!r.ok) throw new Error((await r.json()).detail || '登录失败')
+  return r.json()
+}
+
+export async function register(req: AuthRequest & { display_name?: string }): Promise<AuthResponse> {
+  const r = await fetch(`${BASE}/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!r.ok) throw new Error((await r.json()).detail || '注册失败')
+  return r.json()
+}
+
+export async function logout(token: string): Promise<void> {
+  await fetch(`${BASE}/logout`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  })
+}
+
+export async function getUserInfo(token: string): Promise<UserInfo> {
+  const r = await fetch(`${BASE}/user/me`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!r.ok) throw new Error('获取用户信息失败')
+  return r.json()
+}
+
 
 export async function sendChat(req: ChatRequest): Promise<ChatResponse> {
   const res = await fetch(`${BASE}/chat`, {
@@ -140,6 +198,60 @@ export async function getBm25Status(): Promise<any> {
 export async function rebuildBm25(): Promise<any> {
   const res = await fetch(`${BASE}/knowledge/bm25/rebuild`, { method: 'POST' })
   return res.json()
+}
+
+// ── Orders ──
+
+export interface LogisticsEventItem {
+  event_type: string
+  message: string
+  location: string | null
+  timestamp: string
+}
+
+export interface OrderItem {
+  order_id: string
+  user_id: string
+  part_type: string
+  part_name: string
+  quantity: number
+  price: number
+  status: string
+  tracking_number: string | null
+  express_company: string | null
+  shipping_address: string
+  created_at: string
+  updated_at: string
+  logistics: LogisticsEventItem[]
+}
+
+export interface OrderListResponse {
+  orders: OrderItem[]
+  total: number
+}
+
+export interface OrderStatusResponse {
+  order_id: string
+  status: string
+  status_label: string
+  tracking_number: string | null
+  express_company: string | null
+  logistics: LogisticsEventItem[]
+}
+
+export async function getOrders(userId: string, page = 1): Promise<OrderListResponse> {
+  const r = await fetch(`${BASE}/orders?user_id=${userId}&page=${page}&page_size=20`)
+  return r.json()
+}
+
+export async function getOrderDetail(orderId: string): Promise<OrderStatusResponse> {
+  const r = await fetch(`${BASE}/orders/${orderId}`)
+  return r.json()
+}
+
+export async function advanceOrder(orderId: string, scenario = 'normal'): Promise<OrderStatusResponse> {
+  const r = await fetch(`${BASE}/orders/${orderId}/advance?scenario=${scenario}`, { method: 'POST' })
+  return r.json()
 }
 
 // ── Search Logs ──

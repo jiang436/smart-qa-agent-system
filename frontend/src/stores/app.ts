@@ -9,6 +9,7 @@ export const useAppStore = defineStore('app', () => {
   const deviceOnline = ref(true)
   const sidebarCollapsed = ref(false)
   const token = ref('')
+  const showLogin = ref(false)
 
   function setUser(id: string, name: string, role: 'user' | 'admin' = 'user', t: string = '') {
     userId.value = id
@@ -26,7 +27,7 @@ export const useAppStore = defineStore('app', () => {
   }
 
   return {
-    userId, userName, userRole, deviceModel, deviceOnline, sidebarCollapsed, token,
+    userId, userName, userRole, deviceModel, deviceOnline, sidebarCollapsed, token, showLogin,
     setUser, toggleSidebar, isAdmin,
   }
 })

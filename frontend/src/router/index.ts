@@ -20,6 +20,11 @@ const router = createRouter({
       component: () => import('@/views/ConsumablesView.vue'),
     },
     {
+      path: '/orders',
+      name: 'orders',
+      component: () => import('@/views/OrderTrackView.vue'),
+    },
+    {
       path: '/report',
       name: 'report',
       component: () => import('@/views/ReportView.vue'),
@@ -34,12 +39,23 @@ const router = createRouter({
 })
 
 router.beforeEach((to, _from, next) => {
-  if (to.meta.requiresAdmin) {
-    const appStore = useAppStore()
-    if (!appStore.isAdmin()) {
-      next({ name: 'chat' })
-      return
+  const appStore = useAppStore()
+  if (!appStore.token) {
+    const savedToken = localStorage.getItem('smart_qa_token')
+    const savedUser = localStorage.getItem('smart_qa_user')
+    if (savedToken && savedUser) {
+      try {
+        const u = JSON.parse(savedUser)
+        appStore.setUser(u.user_id || '', u.username || '', (u.role as 'user' | 'admin') || 'user', savedToken)
+      } catch {
+        localStorage.removeItem('smart_qa_token')
+        localStorage.removeItem('smart_qa_user')
+      }
     }
+  }
+  if (to.meta.requiresAdmin && !appStore.isAdmin()) {
+    next({ name: 'chat' })
+    return
   }
   next()
 })

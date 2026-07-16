@@ -11,6 +11,7 @@ const navItems = computed(() => {
     { path: '/', label: '智能对话', icon: '💬' },
     { path: '/troubleshoot', label: '故障排查', icon: '🔧' },
     { path: '/consumables', label: '耗材管理', icon: '📦' },
+    { path: '/orders', label: '订单追踪', icon: '📮' },
     { path: '/report', label: '使用报告', icon: '📊' },
   ]
   if (appStore.isAdmin()) {

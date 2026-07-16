@@ -82,7 +82,7 @@ uv run python -m smart_qa.scripts.init_vector_store
 
 # 5. 启动服务 (http://localhost:8000)
 make dev
-# 或: uv run smart-qa
+# 或: uv run smart-qa --log-level debug
 ```
 
 ### 前端启动

@@ -1,7 +1,7 @@
-"""初始化数据库 — 创建所有表并写入种子数据
+"""初始化数据库 — 创建所有表并写入种子数据（含默认管理员）
 
 Usage:
-    python -m src.scripts.init_db
+    uv run python -m smart_qa.scripts.init_db
 """
 
 import asyncio
@@ -13,10 +13,10 @@ from smart_qa.database.postgres import PostgresClient
 
 
 async def init_db():
-    """创建所有数据库表"""
+    """创建所有数据库表（默认管理员账户由 engine.init_db 自动创建）"""
     print("[InitDB] 开始初始化数据库...")
     await _init_engine(settings.postgres_dsn)
-    print("[InitDB] 数据库表创建完成")
+    print("[InitDB] 数据库表创建完成（含默认管理员 admin / admin）")
 
 
 async def seed_data():

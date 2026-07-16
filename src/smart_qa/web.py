@@ -18,7 +18,6 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     try:
         await init_redis()
-        logger.info("Redis 连接成功")
     except Exception as e:
         logger.warning("Redis 不可用: {}", str(e)[:100])
     try:
