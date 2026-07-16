@@ -26,6 +26,7 @@ Usage:
         ...
 """
 
+import os
 from functools import lru_cache
 
 from smart_qa.config import settings
@@ -33,19 +34,30 @@ from smart_qa.observability.logger import logger
 from smart_qa.security import RateLimiter, SensitiveFilter
 
 
+class _MockLLM:
+    """测试用 LLM 桩 — 立即返回空回答，不调用外部 API
+
+    各调用方已有 try/except + 关键词降级逻辑，
+    空回答会自动触发降级，确保图流程完整运行。
+    """
+
+    async def ainvoke(self, messages, **kwargs):
+        from langchain_core.messages import AIMessage
+
+        return AIMessage(content="")
+
+
 @lru_cache
 def get_llm_client():
-    """获取 LLM 客户端 (DeepSeek via OpenAI-compatible API)
+    """获取 LLM 客户端
 
-    使用 LangChain 的 ChatOpenAI 包装器，连接兼容 OpenAI SDK 的 API（如 DeepSeek）。
-    从 settings 读取 API Key、Base URL、模型名。
-
-    单例 + 懒加载：首次调用时初始化 LLM 连接，之后复用。
-    低温（temperature=0.3）确保回答一致性，max_tokens=2048 控制生成长度。
-
-    返回值:
-        langchain_openai.ChatOpenAI — 配置好的 LLM 客户端实例
+    TESTING=true 时返回 MockLLM（不调用外部 API，立即返回空回答）。
+    各调用方已有异常降级逻辑，空回答自动触发关键词兜底。
     """
+    if os.environ.get("TESTING") == "true":
+        logger.info("LLM 测试模式: 使用 MockLLM (跳过外部 API)")
+        return _MockLLM()
+
     from langchain_openai import ChatOpenAI
 
     logger.info("正在加载 LLM 模型: {} (base_url={})", settings.lightweight_model, settings.llm_base_url)

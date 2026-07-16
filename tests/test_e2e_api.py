@@ -1,4 +1,9 @@
-"""端到端测试 — FastAPI TestClient 全链路验证"""
+"""端到端测试 — FastAPI TestClient 全链路验证 (测试模式跳过模型预加载)"""
+
+import os
+
+# 测试模式：跳过 Embedding / Reranker / LLM 模型预加载
+os.environ["TESTING"] = "true"
 
 import pytest
 from fastapi.testclient import TestClient

@@ -92,7 +92,7 @@ def _load_knowledge_bm25():
             return _shared_bm25
 
         bm = BM25Index()
-        docs = _collect_knowledge_texts()
+        docs = collect_knowledge_texts()
         if docs:
             bm.build(docs)
             _shared_bm25 = bm
@@ -109,7 +109,7 @@ def set_shared_bm25(bm25):
         _shared_bm25 = bm25
 
 
-def _collect_knowledge_texts() -> list[str]:
+def collect_knowledge_texts() -> list[str]:
     """收集所有可索引知识文本 — 和 Milvus 使用完全相同的数据源
 
     来源:
@@ -168,7 +168,7 @@ def _collect_knowledge_texts() -> list[str]:
     # ── 3. 默认知识（目录为空时兜底） ──
     if not texts:
         try:
-            from smart_qa.scripts.init_vector_store import DEFAULT_KNOWLEDGE
+            from smart_qa.knowledge.default_data import DEFAULT_KNOWLEDGE
 
             for category, content in DEFAULT_KNOWLEDGE.items():
                 doc_type = SmartDocumentSplitter.detect_type(f"builtin/{category}.md", content)
@@ -192,7 +192,7 @@ def _load_knowledge_bm25():
         return _shared_bm25
 
     bm = BM25Index()
-    docs = _collect_knowledge_texts()
+    docs = collect_knowledge_texts()
     if docs:
         bm.build(docs)
         _shared_bm25 = bm

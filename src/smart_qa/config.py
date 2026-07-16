@@ -59,7 +59,6 @@ class Settings(BaseSettings):
     port: int = 8000
     # ── CORS ──
     cors_origins: list[str] = ["*"]  # 生产环境请指定具体域名, e.g. ["https://myapp.com"]
-
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

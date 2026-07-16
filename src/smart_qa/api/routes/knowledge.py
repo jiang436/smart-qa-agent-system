@@ -244,9 +244,9 @@ async def bm25_status():
 async def bm25_rebuild():
     """重建 BM25 索引并持久化 — 和 Milvus 使用完全相同的数据源"""
     from smart_qa.knowledge.bm25 import BM25Index
-    from smart_qa.rag.retrieval import _collect_knowledge_texts, set_shared_bm25
+    from smart_qa.rag.retrieval import collect_knowledge_texts, set_shared_bm25
 
-    docs = _collect_knowledge_texts()
+    docs = collect_knowledge_texts()
 
     bm25 = BM25Index()
     bm25.build(docs)
