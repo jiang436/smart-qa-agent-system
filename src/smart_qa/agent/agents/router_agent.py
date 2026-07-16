@@ -215,10 +215,11 @@ class RouterAgent:
         # ── 进行中的多轮诊断 → 先判断是否在回答排查问题 ──
         task = state.get("task_memory") or {}
         if task.get("diagnosis_stage") == "diagnosis":
-            is_short_answer = len(query) <= 10 or any(
-                query.startswith(kw) for kw in ["是", "对", "有", "嗯", "不", "没", "亮", "能", "可以"]
-            )
-            if is_short_answer:
+            # 明确的肯定/否定回答 → 继续诊断
+            # "不"/"没" 开头的查询可能是新问题（"不工作了"）而非诊断回答，
+            # 交给 LLM 做分诊判断（_is_diagnosis_answer）处理。
+            YES_WORDS = ["是", "对", "有", "嗯", "好"]
+            if len(query) <= 4 and any(w in query for w in YES_WORDS):
                 state["intent"] = "troubleshoot"
                 return state
             if self.llm:

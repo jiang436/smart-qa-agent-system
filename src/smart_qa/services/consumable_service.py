@@ -293,8 +293,10 @@ class ConsumableService:
     DEVICE_MODEL = "X30 Pro"
 
     def identify_part(self, query: str) -> str | None:
-        for keyword, pt in PART_SYNONYMS.items():
-            if keyword.lower() in query.lower():
+        q = query.lower()
+        # 按关键词长度降序，优先匹配更精确的短语（避免"拖布支架"误匹"拖布"）
+        for keyword, pt in sorted(PART_SYNONYMS.items(), key=lambda x: -len(x[0])):
+            if keyword.lower() in q:
                 return pt
         m = re.search(r"(边刷|主刷|拖布|滤网|集尘袋|清洁液|套装)", query)
         return PART_SYNONYMS.get(m.group(0)) if m else None

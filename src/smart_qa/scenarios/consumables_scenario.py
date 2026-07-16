@@ -1,56 +1,63 @@
-"""耗材管理场景 — 基于设备 + 耗材兼容表的配件推荐 + HITL 确认下单
+"""耗材管理场景 — 基于 LLM 语义分析的 Agentic 流程
 
-核心流程:
+核心流程（由 LLM 分析驱动，非硬编码 if/else）:
 
-  第一轮: 推荐
-    1. 设备识别 → 2. 耗材兼容表查询 → 3. 推荐生成
-    4. 设置 state.task_memory.pending_purchase
-    5. 返回推荐 + 询问是否下单
-
-  第二轮: 确认
-    1. RouterAgent 检测到 pending_purchase → 路由到 consumables
-    2. ConsumablesScenario 检测到 pending_purchase
-    3. 判断用户意图 (yes/no)
-    4. yes → 创建虚拟订单 → 自动模拟物流 → 返回确认信息
-    5. no → 取消 → 返回取消信息
-
-  中途: 物流查询
-    用户说「查订单」「物流状态」时拦截查询最新物流事件
+  1. LLM 分析用户查询 → 结构化意图: {action, category, product_keyword}
+  2. 根据 action 分发:
+     - track_order      → 查询物流
+     - view_category    → 展示类别下产品列表
+     - identify_product → 匹配具体产品 → 推荐 + HITL
+     - browse           → 展示所有类别
+     - confirm          → 确认购买（HITL）
+     - reject           → 取消购买
+     - unknown          → 无法理解时友好回复
 
 ⚠️ 订单与物流均为模拟数据
-==============================
-用户确认购买后，系统创建 VirtualOrder（虚拟订单）并通过
-OrderSimulationService 自动推进物流环节。
-
-模拟内容包括：
-  - 订单号（ORD + 随机字符）
-  - 快递单号（SF + 随机字符）
-  - 物流事件（5 种预设模板按顺序播放）
-  - 价格（演示数值，无真实支付）
-
-物流场景随机选择（下单时决定）：
-  normal(正常送达) 80% | damaged(损坏) 8% | lost(丢失) 5%
-  out_of_stock(缺货) 2% | returned(退货) 5%
-
-所有数据仅用于演示对话闭环，不连接任何真实电商或物流系统。
 """
 
 from __future__ import annotations
 
+import json
+import random
 import time
 
 from smart_qa.agent.state_utils import extract_user_query
 from smart_qa.observability.logger import logger
 from smart_qa.services.consumable_service import ConsumableService
 
+# ── LLM 分析 prompt 模板 ──
+_ANALYZE_PROMPT = """你是一个智能家居耗材管理助手的意图分析模块。你的任务是理解用户的查询并返回结构化 JSON。
+
+可用耗材类别:
+{category_list}
+
+全部配件:
+{product_list}
+
+请分析用户查询，返回以下 JSON（仅 JSON，不要其他文字）:
+
+{{
+  "action": "browse" | "view_category" | "identify_product" | "track_order" | "unknown",
+  "category": null | "类别名称（必须与上面列出的类别名完全一致）",
+  "product_keyword": null | "用户提到的配件关键词（用于在产品库中搜索）",
+  "reason": "简短说明你的判断理由"
+}}
+
+action 选择规则:
+- browse: 用户表示要买耗材/看配件/有什么, 没有指定具体类别或配件
+- view_category: 用户提到了某个类别名称（如"清洁刷组""结构备件"）
+- identify_product: 用户提到了具体的配件（如"边刷""滤网""拖布"）或想购买某配件
+- track_order: 用户想查订单/物流/到哪了
+- unknown: 完全无法理解或与耗材无关
+
+用户查询: {query}
+"""
+
 
 class ConsumablesScenario:
     """耗材管理场景（模拟订单系统）
 
-    用法:
-        result_state = await ConsumablesScenario.run(state)
-
-    ⚠️ 订单与物流均为模拟数据，非真实交易。
+    基于 LLM 语义分析驱动流程分发，而非硬编码关键词匹配。
     """
 
     _consumable_service: ConsumableService | None = None
@@ -61,165 +68,266 @@ class ConsumablesScenario:
             cls._consumable_service = ConsumableService()
         return cls._consumable_service
 
+    @classmethod
+    async def _analyze_query(cls, query: str) -> dict:
+        """用 LLM 分析用户查询，返回结构化意图"""
+        service = cls._get_consumable_service()
+        categories = service.get_all_categories()
+        products = service.get_all_products()
+
+        prompt = _ANALYZE_PROMPT.format(
+            category_list="\n".join(f"  - {c}" for c in categories),
+            product_list="\n".join(f"  - {p['name']}（{p['model']}）" for p in products),
+            query=query,
+        )
+
+        try:
+            from smart_qa.deps import get_llm_client
+
+            llm = get_llm_client()
+            response = await llm.ainvoke(prompt)
+            content = response.content if hasattr(response, "content") else str(response)
+
+            # 提取 JSON（处理 LLM 偶尔加 markdown 包围的情况）
+            if "```" in content:
+                content = content.split("```")[0] if content.startswith("```") else content.split("```")[1]
+                if content.startswith("json"):
+                    content = content[4:]
+            content = content.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+
+            result = json.loads(content)
+            if result.get("action") not in ("browse", "view_category", "identify_product", "track_order", "unknown"):
+                result["action"] = "unknown"
+            return result
+        except Exception as e:
+            logger.warning("LLM 意图分析失败 query={} err={}", query[:40], e)
+            return {"action": "unknown", "category": None, "product_keyword": None}
+
     @staticmethod
     async def run(state: dict) -> dict:
         """执行耗材管理场景
 
-        状态机:
-          init → 收集设备信息 → 查询兼容表 → 推荐 → HITL 确认 → 创建虚拟订单 → 完成
-          中途可查询订单物流状态
+        LLM 驱动流程分发：
+          1. 订单/物流查询拦截（关键词快检）
+          2. pending_purchase 检查（HITL）
+          3. LLM 语义分析 → 分发 action
+          4. 根据 action 执行对应逻辑
         """
         start = time.time()
-        query = ConsumablesScenario._extract_query(state)
+        query = extract_user_query(state)
         user_id = state.get("user_id", "anonymous")
         logger.info("耗材场景开始 user={} query={}", user_id, query[:60])
+
+        raw_tm = state.get("task_memory")
+        pending_info = (raw_tm or {}).get("pending_purchase") if raw_tm else None
+
+        # 从 messages 恢复 pending_purchase（SystemMessage + RemoveMessage 跨轮持久）
+        if not pending_info:
+            from langchain_core.messages import SystemMessage as _SM
+
+            for m in state.get("messages", []):
+                if isinstance(m, _SM) and getattr(m, "content", "").startswith("__pending_purchase__:"):
+                    try:
+                        import json as _json
+
+                        pending_info = _json.loads(m.content[len("__pending_purchase__:"):])
+                        break
+                    except Exception:
+                        pass
 
         if not query:
             state["final_answer"] = "请问您需要查询哪种耗材？或者告诉我您的设备型号，我帮您查兼容的配件。"
             return state
 
-        # ── 订单/物流查询（拦截物流相关关键词）──
-        order_keywords = ["订单", "物流", "到哪了", "快递", "发货", "运单", "查一下", "跟踪", "签收", "收到"]
-        is_order_query = any(kw in query for kw in order_keywords)
-        if is_order_query:
-            try:
-                from sqlalchemy import select
-
-                from smart_qa.database.engine import get_session_factory
-                from smart_qa.models.virtual_order import VirtualOrder
-
-                factory = get_session_factory()
-                async with factory() as session:
-                    result = await session.execute(
-                        select(VirtualOrder)
-                        .where(VirtualOrder.user_id == user_id)
-                        .order_by(VirtualOrder.created_at.desc())
-                        .limit(1)
-                    )
-                    order = result.scalar_one_or_none()
-                    if order:
-                        from smart_qa.models.virtual_order import LogisticsEvent
-
-                        event_result = await session.execute(
-                            select(LogisticsEvent)
-                            .where(LogisticsEvent.order_id == order.order_id)
-                            .order_by(LogisticsEvent.id.desc())
-                            .limit(1)
-                        )
-                        last_event = event_result.scalar_one_or_none()
-
-                        from smart_qa.models.order_schema import STATUS_LABELS
-
-                        label = STATUS_LABELS.get(order.status, order.status)
-                        msg = (
-                            f"📋 订单状态查询\n"
-                            f"订单号: {order.order_id}\n"
-                            f"商品: {order.part_name}\n"
-                            f"状态: {label}\n"
-                            f"快递: {order.express_company or '待发货'} {order.tracking_number or ''}\n"
-                        )
-                        if last_event:
-                            msg += f"最新: {last_event.message}\n"
-                        msg += "\n回复「继续购买」返回耗材选购，或对我说「推进物流」看看下一步。"
-                        state["final_answer"] = msg
-                        return state
-                    else:
-                        state["final_answer"] = "您目前没有进行中的订单。需要购买耗材吗？告诉我您需要什么配件。"
-                        return state
-            except Exception as e:
-                logger.warning("订单查询失败: {}", e)
-                # 降级到正常耗材流程
-                pass
-
-        user_profile = state.get("user_profile", {})
-        task_memory = state.get("task_memory") or {}
-
-        # ═══════════════════════════════════════
-        # Phase 1: 推荐
-        # ═══════════════════════════════════════
-
-        full_context = query
-        messages = state.get("messages", [])
-        for m in messages[-4:-1]:
-            c = (
-                getattr(m, "content", "")
-                if hasattr(m, "content")
-                else (m.get("content", "") if isinstance(m, dict) else "")
-            )
-            full_context = c + " " + full_context
-
-        device_model = ConsumablesScenario._identify_device(full_context, user_profile) or "X30 Pro"
-        service = ConsumablesScenario._get_consumable_service()
-        consumable_type = service.identify_part(query) or ConsumablesScenario._detect_consumable(query)
-
-        product = service.get_product(consumable_type) if consumable_type else None
-
-        if not product:
-            cats = service.get_all_categories()
-            state["final_answer"] = "X30 Pro 目前支持以下耗材类别，请问您需要哪种？\n" + "\n".join(
-                f"  • {c}" for c in cats
-            )
+        if any(kw in query for kw in ["订单", "物流", "到哪了", "快递", "运单", "跟踪", "签收"]):
+            result = await ConsumablesScenario._handle_order_query(user_id)
+            state["final_answer"] = result
             return state
 
-        # ── 生成推荐 + 设置待确认 ──
-        recommendation = (
-            f"📱 设备: {device_model}\n"
-            f"🔧 耗材: {product['name']}\n"
-            f"📦 型号: {product['model']}\n"
-            f"💰 价格: ¥{product['price']}\n"
-            f"📅 建议更换周期: 约{product['life_days']}天\n"
-            f"💡 {product['desc']}\n\n"
-        )
+        # ── HITL 确认：有未处理的待确认订单 → 先处理 ──
+        if pending_info:
+            logger.info("HITL triggered via pending_purchase={}", pending_info.get("product_name"))
+            state["final_answer"] = await ConsumablesScenario._handle_approval(user_id, query, pending_info, state)
+            return state
+        # ── LLM 语义分析 ──
+        analysis = await ConsumablesScenario._analyze_query(query)
+        action = analysis.get("action", "unknown")
+        category = analysis.get("category")
+        product_keyword = analysis.get("product_keyword")
+        logger.info("LLM 分析结果 query={} action={} category={} keyword={}", query[:40], action, category, product_keyword)
 
-        # 保存待确认信息
-        pending_info = {
-            "device_model": device_model,
-            "consumable_type": consumable_type,
-            "product_name": product["name"],
-            "product_model": product["model"],
-            "price": product["price"],
-        }
+        service = ConsumablesScenario._get_consumable_service()
+        user_profile = state.get("user_profile", {})
 
-        state["task_memory"] = {**task_memory, "pending_purchase": pending_info}
-        state["final_answer"] = recommendation + "🛒 需要帮您下单购买吗？(回复「是」「确认」「下单」或「不用了」)"
+        # 分发 action
+        if action == "track_order":
+            result = await ConsumablesScenario._handle_order_query(user_id)
+            state["final_answer"] = result
+
+        elif action == "view_category" and category:
+            products = service.get_category_products(category)
+            lines = [f"📂 {category} — 以下配件可选：\n"]
+            for p in products:
+                lines.append(f"  • {p['name']}  ¥{p['price']}")
+                lines.append(f"    型号: {p['model']}  {p.get('desc', '')}")
+            lines.append("\n回复配件的完整名称帮您下单。")
+            state["final_answer"] = "\n".join(lines)
+
+        elif action == "identify_product":
+            # 先尝试按关键词精准搜索
+            matched = None
+            if product_keyword:
+                matched = service.search(product_keyword)
+
+            if not matched:
+                # 回落：搜索整个 query
+                matched = service.search(query)
+
+            if matched:
+                product = matched[0]
+                device_model = ConsumablesScenario._identify_device(query, user_profile) or "X30 Pro"
+
+                # 从全量产品中找到 part_type key
+                consumable_type = None
+                for p in service.get_all_products():
+                    if p.get("part_key") and p["name"] == product.get("name"):
+                        consumable_type = p["part_key"]
+                        break
+
+                pending_info = {
+                    "device_model": device_model,
+                    "consumable_type": consumable_type,
+                    "product_name": product["name"],
+                    "product_model": product["model"],
+                    "price": product["price"],
+                }
+                state["task_memory"] = {**(state.get("task_memory") or {}), "pending_purchase": pending_info}
+                # 存入 messages 确保跨轮持久（MemorySaver 通过 add_messages 保存 messages）
+                from langchain_core.messages import SystemMessage
+                state["messages"] = list(state.get("messages", [])) + [
+                    SystemMessage(id="pending_purchase", content=f"__pending_purchase__:{json.dumps(pending_info)}")
+                ]
+                state["final_answer"] = (
+                    f"📱 设备: {device_model}\n"
+                    f"🔧 耗材: {product['name']}\n"
+                    f"📦 型号: {product['model']}\n"
+                    f"💰 价格: ¥{product['price']}\n"
+                    f"📅 建议更换周期: 约{product['life_days']}天\n"
+                    f"💡 {product['desc']}\n\n"
+                    "🛒 需要帮您下单购买吗？(回复「是」「确认」「下单」或「不用了」)"
+                )
+
+        elif action == "browse":
+            state["final_answer"] = ConsumablesScenario._build_category_list(service)
+
+        else:
+            state["final_answer"] = (
+                "抱歉，我不太确定您需要什么耗材。\n"
+                "您可以告诉我具体的配件名称（如「边刷」「滤网」），"
+                "或者我说当前支持的类别，您选一个看看。\n"
+                "回复「看看类别」查看所有可选分类。"
+            )
 
         elapsed = time.time() - start
-        logger.info("耗材推荐完成 latency={:.1f}s", elapsed)
+        logger.info("耗材场景完成 user={} latency={:.1f}s", user_id, elapsed)
         return state
 
+    # ═══════════════════════════════════════
+    # 子流程
+    # ═══════════════════════════════════════
+
     @staticmethod
-    async def _handle_approval(user_id: str, query: str, pending: dict, state: dict) -> dict:
+    async def _handle_order_query(user_id: str) -> str:
+        """查询用户最新订单物流状态"""
+        try:
+            from sqlalchemy import select
+
+            from smart_qa.database.engine import get_session_factory
+            from smart_qa.models.virtual_order import LogisticsEvent, VirtualOrder
+
+            factory = get_session_factory()
+            async with factory() as session:
+                result = await session.execute(
+                    select(VirtualOrder)
+                    .where(VirtualOrder.user_id == user_id)
+                    .order_by(VirtualOrder.created_at.desc())
+                    .limit(1)
+                )
+                order = result.scalar_one_or_none()
+                if order:
+                    event_result = await session.execute(
+                        select(LogisticsEvent)
+                        .where(LogisticsEvent.order_id == order.order_id)
+                        .order_by(LogisticsEvent.id.desc())
+                        .limit(1)
+                    )
+                    last_event = event_result.scalar_one_or_none()
+
+                    from smart_qa.models.order_schema import STATUS_LABELS
+
+                    label = STATUS_LABELS.get(order.status, order.status)
+                    msg = (
+                        f"📋 订单状态查询\n"
+                        f"订单号: {order.order_id}\n"
+                        f"商品: {order.part_name}\n"
+                        f"状态: {label}\n"
+                        f"快递: {order.express_company or '待发货'} {order.tracking_number or ''}\n"
+                    )
+                    if last_event:
+                        msg += f"最新: {last_event.message}\n"
+                    msg += "\n回复「继续购买」返回耗材选购，或对我说「推进物流」看看下一步。"
+                    return msg
+                else:
+                    return "您目前没有进行中的订单。需要购买耗材吗？告诉我您需要什么配件。"
+        except Exception as e:
+            logger.warning("订单查询失败: {}", e)
+            return "订单查询服务暂时不可用，请稍后再试。"
+
+    @staticmethod
+    async def _handle_approval(user_id: str, query: str, pending: dict, state: dict) -> str:
         """处理用户对推荐的确认/拒绝"""
-        q = query.lower().strip()
+        from smart_qa.deps import get_llm_client
 
-        # 确认关键词
-        confirm = any(
-            kw in q for kw in ["是", "确认", "下单", "买", "要", "好的", "可以", "嗯", "好", "行", "ok", "yes"]
+        llm = get_llm_client()
+        prompt = (
+            f"用户正在确认是否购买「{pending.get('product_name', '')}」（¥{pending.get('price', 0)}）。\n"
+            f"用户回复: {query}\n\n"
+            "请判断用户意图，仅返回 JSON:\n"
+            '{"intent": "confirm" | "reject" | "ambiguous"}\n\n'
+            "规则:\n"
+            '- "confirm": 用户明确同意购买（是、确认、下单、好的、可以、买）\n'
+            '- "reject": 用户明确拒绝（不、不要、不用、算了、取消）\n'
+            '- "ambiguous": 不确定或没明确表态'
         )
-        reject = any(kw in q for kw in ["不", "不要", "不用", "算了", "取消", "no", "别"])
 
-        if confirm and not reject:
-            return await ConsumablesScenario._place_order(user_id, pending, state)
-        elif reject:
+        try:
+            response = await llm.ainvoke(prompt)
+            content = response.content if hasattr(response, "content") else str(response)
+            if "```" in content:
+                content = content.split("```")[1].replace("json", "", 1).split("```")[0]
+            parsed = json.loads(content.strip())
+            intent = parsed.get("intent", "ambiguous")
+        except Exception:
+            q = query.lower().strip()
+            confirm = any(kw in q for kw in ["是", "确认", "下单", "买", "要", "好的", "可以", "嗯", "好", "行"])
+            reject = any(kw in q for kw in ["不", "不要", "不用", "算了", "取消"])
+            intent = "confirm" if confirm and not reject else ("reject" if reject else "ambiguous")
+
+        if intent == "confirm":
+            result = await ConsumablesScenario._place_order(user_id, pending, state)
+            ConsumablesScenario._cleanup_pending_msg(state)
+            return result
+        if intent == "reject":
             state["task_memory"] = {
                 k: v for k, v in (state.get("task_memory") or {}).items() if k != "pending_purchase"
             }
-            state["final_answer"] = "好的，已取消订单。如果您以后需要，随时告诉我。"
-            return state
-        else:
-            # 没明确确认也没拒绝 — 再问一次
-            state["final_answer"] = (
-                f"您想购买「{pending.get('product_name', '')}」吗？\n回复「确认」下单，或「不用了」取消。"
-            )
-            return state
+            ConsumablesScenario._cleanup_pending_msg(state)
+            return "好的，已取消订单。如果您以后需要，随时告诉我。"
+        return f"您想购买「{pending.get('product_name', '')}」吗？\n回复「确认」下单，或「不用了」取消。"
 
     @staticmethod
-    async def _place_order(user_id: str, pending: dict, state: dict) -> dict:
-        """创建虚拟订单并自动模拟物流
-
-        下单后自动完成确认、发货，并前进3步物流环节。
-        物流场景随机选择（正常80%、损坏8%、丢失5%、缺货2%、退货5%）。
-        """
+    async def _place_order(user_id: str, pending: dict, state: dict) -> str:
+        """创建虚拟订单并自动模拟物流"""
         product_name = pending.get("product_name", "")
         price = pending.get("price", 0)
         consumable_type = pending.get("consumable_type", "")
@@ -239,8 +347,6 @@ class ConsumablesScenario:
                 )
                 order = await OrderSimulationService.confirm_order(session, order)
 
-                import random
-
                 scenarios = ["normal"] * 80 + ["damaged"] * 8 + ["lost"] * 5 + ["out_of_stock"] * 2 + ["returned"] * 5
                 scenario = random.choice(scenarios)
 
@@ -252,7 +358,7 @@ class ConsumablesScenario:
             state["task_memory"] = {
                 k: v for k, v in (state.get("task_memory") or {}).items() if k != "pending_purchase"
             }
-            state["final_answer"] = (
+            return (
                 f"✅ 订单已创建！\n"
                 f"📦 {product_name} × 1\n"
                 f"💰 ¥{price}\n"
@@ -262,61 +368,42 @@ class ConsumablesScenario:
             )
         except Exception as e:
             logger.error("订单创建失败: {}", e)
-            state["final_answer"] = "抱歉，下单时遇到了问题，请稍后重试或前往 App 商城购买。"
-
-        return state
+            return "抱歉，下单时遇到了问题，请稍后重试或前往 App 商城购买。"
 
     # ═══════════════════════════════════════
-    # 工具方法（不变）
+    # 工具方法
     # ═══════════════════════════════════════
 
     @staticmethod
-    def _extract_query(state: dict) -> str:
-        return extract_user_query(state)
+    def _build_category_list(service: ConsumableService) -> str:
+        """生成类别列表回复"""
+        cats = service.get_all_categories()
+        return "X30 Pro 目前支持以下耗材类别，请问您需要哪种？\n" + "\n".join(f"  • {c}" for c in cats)
 
     @staticmethod
-    def _identify_device(query: str, user_profile: dict = None) -> str | None:
+    def _identify_device(query: str, user_profile: dict | None = None) -> str | None:
+        """从查询或画像中提取设备型号"""
         import re
 
         normalized = re.sub(r"(?i)x30[\s-]*pro", "X30 Pro", query)
-        if "X30 Pro" in normalized:
-            return "X30 Pro"
+        for model in ["X30 Pro", "X30", "X20 Pro", "T10", "R10", "R20"]:
+            if model.lower() in normalized.lower():
+                return model
         if user_profile:
             return user_profile.get("device_model")
         return None
 
     @staticmethod
-    def _detect_consumable(query: str) -> str | None:
-        consumable_map = {
-            "side_brush": ["边刷", "侧刷", "边扫"],
-            "hepa_filter": ["滤网", "hepa", "过滤网", "滤芯"],
-            "main_brush": ["主刷", "滚刷", "胶刷", "滚筒"],
-            "mop": ["拖布", "抹布", "拖地布"],
-            "dust_bag": ["尘袋", "集尘袋", "垃圾袋"],
-            "cleaner": ["清洁液", "清洗液"],
-            "silver_ion": ["银离子", "抑菌模块"],
-            "antiscale": ["阻垢剂", "除垢剂"],
-            "base_tray": ["清洗盘", "基站盘"],
-            "charge_contact": ["充电触点"],
-            "drive_wheel": ["驱动轮"],
-            "omni_wheel": ["万向轮"],
-            "sensor_cover": ["传感器盖", "保护盖"],
-            "roller_cover": ["盖板", "卡扣"],
-            "water_seal": ["胶条", "防水条"],
-            "water_tank": ["水箱", "清水箱", "污水箱"],
-            "charge_dock": ["充电底座", "充电座"],
-            "disposable_mop": ["一次性拖布", "免洗拖布"],
-            "mop_bracket": ["拖布支架", "支架"],
-            "dust_bin": ["尘盒", "集尘盒", "尘盒组件"],
-            "bumper": ["防撞条", "缓冲条", "防撞"],
-            "lds_cover": ["雷达罩", "激光罩", "雷达盖", "激光雷达罩"],
-            "power_adapter": ["电源适配器", "充电器", "适配器"],
-        }
-        q = query.lower()
-        for en_key, keywords in consumable_map.items():
-            if any(kw in q for kw in keywords):
-                return en_key
-        return None
+    def _cleanup_pending_msg(state: dict):
+        """清理已消费的 pending_purchase SystemMessage"""
+        from langchain_core.messages import RemoveMessage, SystemMessage
+
+        for m in list(state.get("messages", [])):
+            if isinstance(m, SystemMessage) and getattr(m, "content", "").startswith("__pending_purchase__:"):
+                msg_list = list(state.get("messages", []))
+                msg_list.append(RemoveMessage(id="pending_purchase"))
+                state["messages"] = msg_list
+                break
 
     @classmethod
     def reset(cls):

@@ -134,7 +134,6 @@ class EvalRunner:
             "messages": [{"role": "user", "content": query}],
             "user_id": "eval",
             "session_id": session_id,
-            "intent": None,
             "scenario": None,
             "step": 0,
             "max_steps": 15,
@@ -142,6 +141,9 @@ class EvalRunner:
             "tool_calls_history": [],
             "final_answer": None,
             "error": None,
+            "intent": None,
+            "loop_detected": False,
+            "task_memory": None,
         }
         config = {"configurable": {"thread_id": state["session_id"]}}
         result = await graph.ainvoke(state, config=config)

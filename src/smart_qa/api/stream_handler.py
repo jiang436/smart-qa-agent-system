@@ -27,6 +27,15 @@ from smart_qa.memory.conversation_store import save_messages
 from smart_qa.observability.logger import logger
 
 
+def _msg_is_answer(msg, answer: str) -> bool:
+    """判断消息内容是否与最终回答一致"""
+    if hasattr(msg, "content"):
+        return msg.content == answer
+    if isinstance(msg, dict):
+        return msg.get("content") == answer
+    return False
+
+
 class SSEStreamHandler:
     """SSE 流处理器
 
@@ -103,6 +112,7 @@ class SSEStreamHandler:
                 "tool_calls_history": [],
                 "error": None,
                 "loop_detected": False,
+                "task_memory": None,
             }
 
         try:
@@ -152,9 +162,20 @@ class SSEStreamHandler:
         if not sid:
             return
         try:
-            messages = state.get("messages", [])
+            messages = list(state.get("messages", []))
             intent = state.get("intent", "")
-            if isinstance(messages, list) and len(messages) > 1:
+
+            # 场景节点仅设置 final_answer，不 append 到 messages
+            # 此处自动补上 assistant 消息
+            final_answer = state.get("final_answer", "")
+            if final_answer:
+                from langchain_core.messages import AIMessage
+
+                # 仅在最后一条不是助理回复时追加
+                if not messages or not _msg_is_answer(messages[-1], final_answer):
+                    messages.append(AIMessage(content=final_answer))
+
+            if len(messages) > 1:
                 await save_messages(sid, state.get("user_id", ""), messages, intent=intent)
         except Exception:
             pass

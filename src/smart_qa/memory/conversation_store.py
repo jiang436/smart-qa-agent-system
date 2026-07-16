@@ -50,6 +50,16 @@ async def save_messages(
     await _repo.save(session_id, user_id, messages, intent=intent)
 
 
+async def _normalize_messages(msgs: list[dict]) -> list[dict]:
+    """兼容旧数据：将 "human"/"ai" 角色名转为前端期望的 "user"/"assistant"."""
+    from smart_qa.repositories.session_repository import _normalize_role
+
+    for m in msgs:
+        if isinstance(m, dict) and m.get("role") in ("human", "ai"):
+            m["role"] = _normalize_role(m["role"])
+    return msgs
+
+
 async def load_messages(session_id: str, limit: int = 50) -> list[dict]:
     """从 PostgreSQL 加载对话历史
 
@@ -68,4 +78,6 @@ async def load_messages(session_id: str, limit: int = 50) -> list[dict]:
         - 服务重启后恢复对话上下文
         - 前端查询会话历史（GET /session/{id}/history）
     """
-    return await _repo.load(session_id, limit=limit)
+    msgs = await _repo.load(session_id, limit=limit)
+    await _normalize_messages(msgs)
+    return msgs

@@ -41,6 +41,8 @@ def _create_initial_state(user_id: str, message: str, session_id: str = "") -> d
         "tool_calls_history": [],
         "final_answer": None,
         "error": None,
+        "loop_detected": False,
+        "task_memory": None,
     }
 
 
@@ -71,6 +73,15 @@ async def _restore_context(state: dict, graph) -> dict:
         logger.debug("PG 对话上下文恢复失败: {}", e)
 
     return state
+
+
+def _msg_is_answer(msg, answer: str) -> bool:
+    """判断消息内容是否与最终回答一致"""
+    if hasattr(msg, "content"):
+        return msg.content == answer
+    if isinstance(msg, dict):
+        return msg.get("content") == answer
+    return False
 
 
 # ═══════════════════════════════════════════
@@ -115,8 +126,16 @@ async def chat(
 
         # 持久化到 PostgreSQL
         try:
-            final_messages = result.get("messages", state.get("messages", []))
-            if isinstance(final_messages, list) and len(final_messages) > 1:
+            final_messages = list(result.get("messages", state.get("messages", [])))
+            final_answer = result.get("final_answer", "") or answer
+            if final_answer:
+                from langchain_core.messages import AIMessage
+
+                # 场景节点仅设置 final_answer，不 append 到 messages
+                # 此处自动补上 assistant 消息
+                if not final_messages or not _msg_is_answer(final_messages[-1], final_answer):
+                    final_messages.append(AIMessage(content=final_answer))
+            if len(final_messages) > 1:
                 await save_messages(session_id, request.user_id, final_messages, intent=intent)
         except Exception as e:
             logger.debug("PG 对话保存失败: {}", e)

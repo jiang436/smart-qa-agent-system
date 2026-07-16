@@ -61,8 +61,8 @@ async def memory_writer_node(state: dict, config, *, store) -> dict:
     """记忆写入节点 — 从对话中提取用户画像并写入 LangGraph Store
 
     在 guard_check 之后、END 之前执行。
-    只写入 LTM 层级的确信信息（设备型号、偏好、户型等）。
-    写入失败不阻塞主流程。
+    同时负责将 final_answer 补入 messages（场景节点只设 answer 不 append 消息），
+    确保 MemorySaver checkpoint 包含完整对话历史。
     """
     user_id = state.get("user_id", "anonymous")
     if not user_id or user_id in ("anonymous", "", "default"):
@@ -71,6 +71,18 @@ async def memory_writer_node(state: dict, config, *, store) -> dict:
         return state
     if store is None:
         return state
+
+    # ── 将 final_answer 补入 messages ──
+    # 场景节点仅设置 final_answer，从不追加到 messages。
+    # 此处补上 assistant 消息，使 MemorySaver checkpoint 保留完整对话。
+    # 后续 _persist 中已自带去重逻辑（见 stream_handler._persist）。
+    final_answer: str = state["final_answer"]
+    messages = list(state.get("messages", []))
+    if not _last_msg_is_answer(messages, final_answer):
+        from langchain_core.messages import AIMessage
+
+        messages.append(AIMessage(content=final_answer))
+        state["messages"] = messages
 
     # 提取用户消息
     query = _extract_user_query(state)
@@ -123,6 +135,18 @@ async def memory_writer_node(state: dict, config, *, store) -> dict:
             logger.warning("Store 写入失败 user={} err={}", user_id, e)
 
     return state
+
+
+def _last_msg_is_answer(messages: list, answer: str) -> bool:
+    """判断 messages 最后一条是否已经是 answer"""
+    if not messages:
+        return False
+    last = messages[-1]
+    if hasattr(last, "content"):
+        return last.content == answer
+    if isinstance(last, dict):
+        return last.get("content") == answer
+    return False
 
 
 # ═══════════════════════════════════════════

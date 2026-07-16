@@ -1,7 +1,7 @@
-"""会话路由 — GET /session/{id}/history, GET /sessions"""
+"""会话路由 — GET /sessions, GET /session/{id}/history, DELETE /session/{id}"""
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, text
 
 from smart_qa.memory.conversation_store import load_messages
 from smart_qa.models.session import Session
@@ -57,3 +57,28 @@ async def get_session_history(session_id: str):
         return {"session_id": session_id, "messages": messages, "total": len(messages)}
     except Exception:
         return {"session_id": session_id, "messages": [], "note": "会话存储服务暂不可用"}
+
+
+@router.delete("/session/{session_id}")
+async def delete_session(session_id: str):
+    """删除会话记录"""
+    if not session_id or len(session_id) > 64:
+        raise HTTPException(status_code=400, detail="无效的会话 ID")
+    try:
+        from smart_qa.database.engine import get_session_factory
+
+        factory = get_session_factory()
+        async with factory() as db:
+            result = await db.execute(
+                text("DELETE FROM sessions WHERE session_id = :sid"),
+                {"sid": session_id},
+            )
+            await db.commit()
+            if result.rowcount == 0:
+                raise HTTPException(status_code=404, detail="会话不存在")
+            return {"deleted": True, "session_id": session_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("会话删除失败: {}", e)
+        raise HTTPException(status_code=500, detail="删除会话失败") from e

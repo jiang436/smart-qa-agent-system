@@ -3,7 +3,7 @@ import { ref, nextTick, watch, onMounted } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import { useAppStore } from '@/stores/app'
 import { useSSE } from '@/composables/useSSE'
-import { getSessionHistory, getSessions } from '@/api'
+import { getSessionHistory, getSessions, deleteSession } from '@/api'
 import StatusPulse from '@/components/StatusPulse.vue'
 import MessageBubble from '@/components/MessageBubble.vue'
 
@@ -24,18 +24,40 @@ async function fetchSessions() {
   sessionsLoading.value = false
 }
 
+onMounted(() => {
+  fetchSessions()
+})
+
 async function loadSession(sid: string) {
   try {
     const res = await getSessionHistory(sid)
     const msgs = (res.messages || []).map((m: any) => ({
       id: crypto.randomUUID(),
-      role: m.role || 'user',
+      role: normalizeRole(m.role || 'user'),
       content: m.content || '',
       timestamp: Date.now(),
     }))
     chat.loadMessages(msgs)
     chat.sessionId = sid
     sidebarOpen.value = false
+  } catch { /* ignore */ }
+}
+
+function normalizeRole(role: string): string {
+  /* 兼容后端可能返回的 'human'/'ai' */
+  const map: Record<string, string> = { human: 'user', ai: 'assistant' }
+  return map[role] || role
+}
+
+async function handleDelete(sid: string) {
+  try {
+    await deleteSession(sid)
+    // 如果删除的是当前会话，清空消息区
+    if (chat.sessionId === sid) {
+      chat.clearMessages()
+    }
+    // 刷新列表
+    await fetchSessions()
   } catch { /* ignore */ }
 }
 
@@ -81,6 +103,11 @@ function onKeydown(e: KeyboardEvent) {
     onSubmit()
   }
 }
+
+function onQuickAction(label: string) {
+  input.value = label
+  onSubmit()
+}
 </script>
 <template>
   <div class="flex h-full">
@@ -100,10 +127,15 @@ function onKeydown(e: KeyboardEvent) {
             v-for="s in chat.sessions" :key="s.session_id"
             @click="loadSession(s.session_id)"
             :class="[
-              'px-4 py-3 border-b border-slate-50 cursor-pointer hover:bg-slate-50 transition-colors',
+              'group relative px-4 py-3 border-b border-slate-50 cursor-pointer hover:bg-slate-50 transition-colors',
               s.session_id === chat.sessionId ? 'bg-accent-soft/20 border-l-2 border-l-accent' : ''
             ]"
           >
+            <button
+              @click.stop="handleDelete(s.session_id)"
+              class="absolute top-2 right-2 w-5 h-5 flex items-center justify-center rounded text-[11px] text-slate-300 hover:text-danger hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-opacity"
+              title="删除会话"
+            >×</button>
             <div class="flex items-center gap-2 mb-1">
               <span class="px-1 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-500">{{ intentLabel[s.intent] || s.intent }}</span>
               <span class="text-[10px] text-slate-400">{{ s.message_count }}条</span>
@@ -146,15 +178,15 @@ function onKeydown(e: KeyboardEvent) {
 
       <!-- Input -->
       <div class="px-5 py-3 bg-white border-t border-slate-200 shrink-0">
-        <div class="flex items-end gap-2">
-          <div class="flex-1 relative">
+        <div class="flex items-center gap-2">
+          <div class="flex-1 flex items-center">
             <textarea
               v-model="input"
               @keydown="onKeydown"
               :disabled="chat.isProcessing"
               placeholder="输入您的问题… (Enter 发送, Shift+Enter 换行)"
               rows="1"
-              class="w-full resize-none rounded-md border border-slate-200 px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent-soft disabled:bg-slate-50"
+              class="w-full resize-none rounded-md border border-slate-200 px-3 py-2 text-sm leading-5 placeholder:text-slate-400 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent-soft disabled:bg-slate-50"
             />
           </div>
           <button

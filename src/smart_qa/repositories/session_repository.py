@@ -28,16 +28,31 @@ class SessionRepository(Protocol):
         ...
 
 
+ROLE_MAP = {
+    "human": "user",
+    "ai": "assistant",
+}
+
+
+def _normalize_role(role: str) -> str:
+    """将 LangChain 的角色名 "human"/"ai" 转为前端期望的 "user"/"assistant"."""
+    return ROLE_MAP.get(role, role)
+
+
 def _to_serializable(messages: list) -> list[dict]:
-    """将 LangChain Message 对象转为可序列化 dict"""
+    """将 LangChain Message 对象转为可序列化 dict，角色名已归一化"""
     result = []
     for m in messages:
         if isinstance(m, dict):
+            role = m.get("role", m.get("type", ""))
+            m = dict(m)
+            m["role"] = _normalize_role(role)
             result.append(m)
         else:
+            role = getattr(m, "type", "") or getattr(m, "role", "")
             result.append(
                 {
-                    "role": getattr(m, "type", "") or getattr(m, "role", ""),
+                    "role": _normalize_role(role),
                     "content": getattr(m, "content", ""),
                 }
             )
