@@ -102,11 +102,7 @@ class TestEngineLifecycle:
                 )
                 tables = {row[0] for row in await result.fetchall()}
                 assert "sessions" in tables
-                assert "user_devices" in tables
-                assert "consumable_orders" in tables
-                assert "device_usage_logs" in tables
                 assert "knowledge_files" in tables
-                assert "user_profiles" in tables
         finally:
             async with eng.begin() as conn:
                 await conn.run_sync(Base.metadata.drop_all)

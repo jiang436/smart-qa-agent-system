@@ -1,4 +1,4 @@
-"""Prompt Loader + Persona + Citation + HyDE 边界测试"""
+"""Prompt Loader + Persona + Citation 边界测试"""
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -130,31 +130,3 @@ class TestCitation:
         assert isinstance(result["citations"], list)
 
 
-class TestHyDE:
-    def test_hyde_skip_short_query(self):
-        from smart_qa.rag.hyde import HyDE
-        hyde = HyDE(llm_client=MagicMock())
-        result = hyde.generate("ni")
-        assert result is None  # 太短
-
-    def test_hyde_skip_greeting(self):
-        from smart_qa.rag.hyde import HyDE
-        hyde = HyDE(llm_client=MagicMock())
-        result = hyde.generate("ni hao")
-        assert result is None  # 寒暄跳过
-
-    def test_hyde_no_llm(self):
-        from smart_qa.rag.hyde import HyDE
-        hyde = HyDE(llm_client=None)
-        result = hyde.generate("bian shua zen me huan")
-        assert result is None  # 无 LLM
-
-    def test_hyde_with_mock_llm(self):
-        from smart_qa.rag.hyde import HyDE
-        mock_llm = MagicMock()
-        mock_llm.invoke.return_value = type('R', (), {'content': 'zhe shi HyDE sheng cheng de jia she da an wen dang'})()
-
-        hyde = HyDE(llm_client=mock_llm)
-        result = hyde.generate("bian shua huai le")
-        assert result is not None
-        assert len(result) > 30

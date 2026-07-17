@@ -5,8 +5,10 @@ from smart_qa.rag.reranker import Reranker
 class TestHeuristicReranker:
     def setup_method(self):
         self.reranker = Reranker.__new__(Reranker)
+        self.reranker.backend = "heuristic"
+        self.reranker.llm = None
         self.reranker.model_name = "BAAI/bge-reranker-v2-m3"
-        self.reranker._cross_encoder_available = False
+        self.reranker._local_available = False
         self.reranker._model = None
 
     def test_empty_docs_returns_empty(self):

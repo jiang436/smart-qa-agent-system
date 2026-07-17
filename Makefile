@@ -34,14 +34,6 @@ lint:
 lint-fix:
 	uv run ruff check --fix src/smart_qa/
 
-# ── 评测 ──
-
-eval:
-	uv run python -m smart_qa.evaluation.runner
-
-eval-easy:
-	uv run python -m smart_qa.evaluation.runner --difficulty easy
-
 # ── 数据库 ──
 
 db-init:

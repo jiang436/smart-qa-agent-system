@@ -35,6 +35,8 @@ class BM25Index:
         self.k1 = k1
         self.b = b
         self.documents: list[str] = []
+        self._sources: list[dict] = []  # 每篇文档的元数据 {source, header}
+        self._doc_lengths: list[int] = []  # 预计算文档长度（避免 search 时重复分词）
         self.doc_count = 0
         self.avg_doc_len = 0.0
         self.inverted_index: dict[str, list[tuple[int, int]]] = {}
@@ -44,17 +46,21 @@ class BM25Index:
     # 构建
     # ═══════════════════════════════════════
 
-    def build(self, documents: list[str]):
-        """构建 BM25 倒排索引"""
+    def build(self, documents: list[str], sources: list[dict] | None = None):
+        """构建 BM25 倒排索引（含预计算文档长度）"""
         self.documents = documents
+        self._sources = list(sources) if sources else [{}] * len(documents)
         self.doc_count = len(documents)
         total_len = 0
         self.inverted_index = {}
+        self._doc_lengths = []
 
         for doc_id, doc in enumerate(documents):
             terms = self._tokenize(doc)
             term_counts = Counter(terms)
-            total_len += len(terms)
+            doc_len = len(terms)
+            total_len += doc_len
+            self._doc_lengths.append(doc_len)
             for term, count in term_counts.items():
                 self.inverted_index.setdefault(term, []).append((doc_id, count))
 
@@ -73,6 +79,8 @@ class BM25Index:
             "k1": self.k1,
             "b": self.b,
             "documents": self.documents,
+            "sources": self._sources,
+            "doc_lengths": self._doc_lengths,
             "doc_count": self.doc_count,
             "avg_doc_len": self.avg_doc_len,
             "inverted_index": self.inverted_index,
@@ -92,6 +100,8 @@ class BM25Index:
             self.k1 = data["k1"]
             self.b = data["b"]
             self.documents = data["documents"]
+            self._sources = data.get("sources", [{}] * len(self.documents))
+            self._doc_lengths = data.get("doc_lengths", [len(self._tokenize(d)) for d in self.documents])
             self.doc_count = data["doc_count"]
             self.avg_doc_len = data["avg_doc_len"]
             self.inverted_index = data["inverted_index"]
@@ -123,8 +133,10 @@ class BM25Index:
         for doc_id_offset, doc in enumerate(new_docs):
             terms = self._tokenize(doc)
             term_counts = Counter(terms)
+            doc_len = len(terms)
             doc_id = self.doc_count + doc_id_offset
-            total_len_so_far += len(terms)
+            total_len_so_far += doc_len
+            self._doc_lengths.append(doc_len)
             for term, count in term_counts.items():
                 self.inverted_index.setdefault(term, []).append((doc_id, count))
 
@@ -151,7 +163,7 @@ class BM25Index:
             df = len(self.inverted_index[term])
             idf = math.log((self.doc_count - df + 0.5) / (df + 0.5) + 1)
             for doc_id, count in self.inverted_index[term]:
-                doc_len = len(self._tokenize(self.documents[doc_id]))
+                doc_len = self._doc_lengths[doc_id] if doc_id < len(self._doc_lengths) else 1
                 tf = (count * (self.k1 + 1)) / (count + self.k1 * (1 - self.b + self.b * doc_len / self.avg_doc_len))
                 scores[doc_id] += idf * tf
 
@@ -161,7 +173,12 @@ class BM25Index:
         )[:top_k]
 
         return [
-            {"doc_id": doc_id, "content": self.documents[doc_id][:200], "score": round(score, 4), "source": "BM25"}
+            {
+                "doc_id": doc_id,
+                "content": self.documents[doc_id],
+                "score": round(score, 4),
+                "source": self._sources[doc_id].get("source", "BM25") if doc_id < len(self._sources) else "BM25",
+            }
             for doc_id, score in ranked
         ]
 

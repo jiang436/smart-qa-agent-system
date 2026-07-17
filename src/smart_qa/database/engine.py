@@ -48,9 +48,11 @@ async def init_db(dsn: str | None = None):
 
     # Stamp Alembic head 以便后续迁移正常工作
     try:
-        from alembic import command
-        from alembic.config import Config as AlembicConfig
         import os
+
+        from alembic.config import Config as AlembicConfig
+
+        from alembic import command
 
         _alembic_cfg = AlembicConfig()
         _alembic_cfg.set_main_option("script_location", os.path.join(os.path.dirname(__file__), "../../..", "alembic"))

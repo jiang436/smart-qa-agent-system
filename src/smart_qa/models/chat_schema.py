@@ -20,6 +20,7 @@ class ChatResponse(BaseModel):
     session_id: str = Field(..., max_length=64, description="会话 ID")
     intent: str = Field(
         default="general",
-        pattern=r"^(qa|troubleshoot|consumables|device_control|report|general)$",
+        pattern=r"^(qa|troubleshoot|general)$",
         description="识别的意图",
     )
+    citations: list[dict] = Field(default_factory=list, description="引用来源列表")

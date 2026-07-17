@@ -26,11 +26,13 @@ export async function sendChat(req: ChatRequest): Promise<ChatResponse> {
   return res.json()
 }
 
+export interface Citation { doc_id: string; source: string; matched_sentence: string }
+
 export function sendChatStream(
   req: ChatRequest,
   onToken: (text: string) => void,
   onStatus: (stage: string, message: string) => void,
-  onDone: (intent?: string, sessionId?: string) => void,
+  onDone: (intent?: string, sessionId?: string, citations?: Citation[]) => void,
   onError: (err: string) => void,
 ): AbortController {
   const controller = new AbortController()
@@ -68,7 +70,7 @@ export function sendChatStream(
             const data = JSON.parse(line.slice(6))
             if (event === 'token') onToken(data.text || '')
             else if (event === 'status') onStatus(data.stage || '', data.message || '')
-            else if (event === 'done') onDone(data.intent, data.session_id)
+            else if (event === 'done') onDone(data.intent, data.session_id, data.citations || [])
             else if (event === 'error') onError(data.message || '未知错误')
           } catch { /* skip malformed */ }
         }
@@ -87,9 +89,14 @@ export async function getSessionHistory(sessionId: string) {
   return res.json()
 }
 
-export async function approveAction(sessionId: string, decision: string, feedback = '') {
-  const form = new URLSearchParams({ session_id: sessionId, decision, feedback })
-  const res = await fetch(`${BASE}/approve`, { method: 'POST', body: form })
+export async function listSessions(userId: string, limit = 20, offset = 0) {
+  const params = new URLSearchParams({ user_id: userId, limit: String(limit), offset: String(offset) })
+  const res = await fetch(`${BASE}/sessions?${params}`)
+  return res.json()
+}
+
+export async function deleteSession(sessionId: string) {
+  const res = await fetch(`${BASE}/session/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
   return res.json()
 }
 
@@ -139,5 +146,19 @@ export async function getBm25Status(): Promise<any> {
 
 export async function rebuildBm25(): Promise<any> {
   const res = await fetch(`${BASE}/knowledge/bm25/rebuild`, { method: 'POST' })
+  return res.json()
+}
+
+export interface KnowledgeFile {
+  filename: string
+  file_type: string
+  chunks: number
+  dimension: number
+  uploaded_at: string
+  source: string
+}
+
+export async function getKnowledgeFiles(): Promise<{ files: KnowledgeFile[] }> {
+  const res = await fetch(`${BASE}/knowledge/files`)
   return res.json()
 }

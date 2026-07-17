@@ -75,7 +75,7 @@ def read_documents(docs_dir: str) -> list[dict]:
             doc_type = SmartDocumentSplitter.detect_type(filename, full_text)
             chunks = splitter.split(
                 full_text, doc_type=doc_type,
-                metadata={"source": rel_path, "title": title, "category": category},
+                metadata={"source": filename, "title": title, "category": category},
             )
             for chunk in chunks:
                 chunk["element_types"] = _collect_element_types(elements)
@@ -123,6 +123,29 @@ def ensure_collection(client: MilvusClient, collection_name: str, dim: int) -> s
     return collection_name
 
 
+def _enrich_content(chunk: dict) -> str:
+    """将 header/section 元数据拼入 content，确保标题信息参与 Embedding
+
+    否则 "### 米家全能扫拖机器人 M40 S" 只存为元数据，
+    "基站功能：自动洗拖布" 里没有型号名，检索时对不上。
+    """
+    content = chunk.get("content", "")
+    section = chunk.get("section", "")
+    header = chunk.get("header", "")
+
+    # 如果 content 已包含 header，不重复拼接
+    prefix_parts = []
+    if section and section not in content:
+        prefix_parts.append(section)
+    if header and header not in content:
+        prefix_parts.append(header)
+
+    if prefix_parts:
+        prefix = " > ".join(prefix_parts)
+        return f"{prefix}\n{content}"
+    return content
+
+
 def insert_to_milvus(
     client: MilvusClient, collection_name: str, chunks: list[dict], embedding_model, batch_size: int = 50
 ):
@@ -140,13 +163,13 @@ def insert_to_milvus(
 
     for i in range(0, total, batch_size):
         batch = chunks[i : i + batch_size]
-        texts = [c["content"] for c in batch]
+        texts = [_enrich_content(c) for c in batch]
         vectors = embedding_model.encode(texts)
 
         data = [
             {
                 "vector": vectors[idx].tolist(),
-                "content": batch[idx]["content"][:4096],
+                "content": texts[idx][:4096],
                 "source": batch[idx]["source"][:256],
                 "title": batch[idx]["title"][:256],
                 "category": batch[idx].get("category", "general")[:64],
@@ -170,31 +193,27 @@ def insert_to_milvus(
 # ── 没有文档时的默认知识内容 ──
 
 DEFAULT_KNOWLEDGE = {
-    "consumables": """# 耗材兼容性指南
+    "consumables": """# 耗材维护指南
 
-## X30 Pro 耗材兼容表
-- 边刷: X30-SB-01 (原装), X30-SB-C (第三方兼容)
-- 主刷: X30-MB-01 (原装), 通用型-T (第三方)
-- HEPA滤网: X30-HF-01 (原装)
-- 拖布: X30-MP-01 (原装), 通用拖布-M (第三方)
-- 尘盒: X30-DB-01 (内置, 无需更换)
+## 常见耗材类型
+- 边刷：负责沿墙和角落清扫，刷毛磨损后清扫效果下降
+- 主刷/滚刷：负责地面主清扫，缠绕毛发需定期清理
+- HEPA滤网：过滤排出空气，到期后影响吸力和空气质量
+- 拖布：接触地面拖洗，随使用次数增加性能衰减
+- 集尘袋：收集灰尘垃圾，装满后需更换
 
 ## 更换周期建议
-- 边刷: 3-6个月 (根据使用频率)
-- 主刷: 6-12个月
-- HEPA滤网: 3-4个月
-- 拖布: 2-3个月
-- 建议定期检查磨损情况
+- 边刷: 3-6个月（刷毛缩短1/3以上时更换）
+- 主刷: 6-12个月（刷毛脱落或橡胶条磨损时更换）
+- HEPA滤网: 3-4个月（不透光或颜色变深时更换）
+- 拖布: 2-3个月（变硬、发黄或洗不干净时更换）
+- 集尘袋: 60-90天（装满或吸力下降时更换）
 
-## T10 耗材兼容表
-- 边刷: T10-SB-01 (原装)
-- 主刷: T10-MB-01 (原装)
-- 滤网: T10-FL-01 (原装)
-
-## X20 Pro 耗材兼容表
-- 边刷: X20-SB-01 (原装), X20-SB-C (第三方)
-- 主刷: X20-MB-01 (原装)
-- 拖布: X20-MP-01 (原装)
+## 选购建议
+- 边刷/拖布：第三方品牌性价比高，够用
+- 滤网/滚刷：建议原厂，对清洁效果影响大
+- 清洁液：必须原厂，第三方可能腐蚀水箱管路
+- 不要使用84消毒液或酒精
 """,
     "fault_troubleshooting": """# 故障排查指南
 

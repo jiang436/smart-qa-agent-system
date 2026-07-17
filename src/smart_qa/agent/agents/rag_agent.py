@@ -102,10 +102,6 @@ class RAGAgent:
         if docs:
             self.citation_tracker.register_docs(docs)
 
-        # 上下文压缩 — 每篇文档只保留与 query 相关的句子
-        if docs and self.llm:
-            docs = self._compress_docs(query, docs)
-
         history = self._extract_history(state)
         context = self._build_context(query, docs, history)
 
@@ -139,7 +135,11 @@ class RAGAgent:
             )
 
         logger.info("写入缓存 query={}", query[:60])
-        await self.cache.set(query, final_answer)
+        citations = [
+            {"doc_id": str(d.get("doc_id", i)), "source": d.get("source", ""), "matched_sentence": (d.get("content", "") or "")[:200]}
+            for i, d in enumerate(docs[:5]) if d.get("content")
+        ]
+        await self.cache.set(query, final_answer, citations)
 
         user_msg = Message(role="user", content=query)
         assistant_msg = Message(role="assistant", content=final_answer)
@@ -169,43 +169,43 @@ class RAGAgent:
         return extract_user_query(state)
 
     def _enrich_query_with_history(self, query: str, state: dict) -> str:
-        """从上一轮对话提取话题词，注入短查询
-
-        LLM 提取核心话题（2-3 词），替代硬编码关键词列表。
-        """
-        if len(query) >= 15:
+        """参照 RAGFlow full_question: LLM 重写追问为完整独立查询"""
+        if len(query) > 15:
+            return query
+        if not self.llm:
             return query
 
         messages = state.get("messages", [])
-        if len(messages) < 2:
+        logger.info("查询重写检查: query={} msgs={}", query[:30], len(messages))
+        if len(messages) < 3:
             return query
 
-        # 取上一轮助手回答
-        last_assistant = ""
-        for msg in reversed(messages[:-1]):
-            content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+        # 构建对话历史文本（取最近6条=3轮）
+        history_lines = []
+        for msg in messages[:-1]:  # 排除当前用户消息
             role = msg.get("role", "") if isinstance(msg, dict) else getattr(msg, "type", "")
-            if role in ("assistant", "ai") and content:
-                last_assistant = content
-                break
-
-        if not last_assistant or not self.llm:
-            return query
+            content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+            if role == "user":
+                history_lines.append(f"用户：{content}")
+            elif role in ("assistant", "ai"):
+                history_lines.append(f"助手：{content[:300]}")
+        history = "\n".join(history_lines[-6:])
 
         try:
             prompt = (
-                "从以下助手回答中，提取 2-3 个核心话题词（产品名/部件/功能），"
-                "用空格分隔。只输出词，不要解释。\n\n"
-                f"助手回答：{last_assistant[:300]}\n话题词："
+                "根据对话历史，把用户最新问题改写为完整独立的问题，补全所有代词和省略信息。\n"
+                "只输出改写后的问题，不要解释。\n\n"
+                f"对话历史：\n{history}\n\n"
+                f"最新问题：{query}\n"
+                "改写后："
             )
             resp = self.llm.invoke(prompt)
-            topics = (resp.content if hasattr(resp, "content") else str(resp)).strip()
-            if topics and len(topics) < 50:
-                enriched = topics + " " + query
-                logger.info("检索查询增强 query={} -> enriched={}", query[:30], enriched[:80])
-                return enriched
+            rewritten = (resp.content if hasattr(resp, "content") else str(resp)).strip()
+            if rewritten and len(rewritten) <= 100 and rewritten != query:
+                logger.info("查询重写: {} -> {}", query[:30], rewritten[:80])
+                return rewritten
         except Exception as e:
-            logger.debug("查询增强 LLM 调用失败: {}", e)
+            logger.debug("查询重写失败: {}", e)
 
         return query
 
@@ -296,9 +296,9 @@ class RAGAgent:
         if not self.llm or not docs:
             return docs
 
-        # 短文档直接保留
-        short = [d for d in docs if len(d.get("content", "")) < 100]
-        to_compress = [d for d in docs if len(d.get("content", "")) >= 100]
+        # 短文档直接保留（提高到 400 字确保产品规格段不被压缩误删标题）
+        short = [d for d in docs if len(d.get("content", "")) < 400]
+        to_compress = [d for d in docs if len(d.get("content", "")) >= 400]
 
         if not to_compress:
             return docs
@@ -416,7 +416,7 @@ class RAGAgent:
                 if hasattr(chunk, "content") and chunk.content:
                     full_text += chunk.content
             return self._clean_output(full_text) if full_text else ""
-        except Exception as e:
+        except Exception:
             # astream 失败降级 ainvoke
             try:
                 response = await self.llm.ainvoke(messages)

@@ -32,18 +32,11 @@ class TestRouterLLMClassification:
         assert intent == "troubleshoot"
 
     @pytest.mark.asyncio
-    async def test_classify_consumables_via_llm(self, mock_llm):
-        mock_llm.ainvoke.return_value = MockLLMResponse("consumables")
-        router = RouterAgent(llm_client=mock_llm)
-        intent = await router._llm_classify("边刷该换了")
-        assert intent == "consumables"
-
-    @pytest.mark.asyncio
     async def test_classify_llm_error_falls_to_keyword(self, mock_llm):
         mock_llm.ainvoke.side_effect = Exception("API Error")
         router = RouterAgent(llm_client=mock_llm)
         intent = await router._classify_intent("购买边刷")
-        assert intent in ("consumables", "qa", "general")
+        assert intent in ("qa", "general")
 
     @pytest.mark.asyncio
     async def test_classify_general_falls_to_keyword(self, mock_llm):
@@ -111,37 +104,15 @@ class TestRouterPipeline:
         result = await router.route(state)
         assert result["intent"] == "general"
 
-    @pytest.mark.asyncio
-    async def test_dispatch_by_intent_sql(self):
-        state = {}
-        router = RouterAgent()
-        result = router._dispatch_by_intent("test", "sql_query", state)
-        assert result["intent"] == "sql_query"
-        assert result.get("scenario") == "sql_query"
-
-
 class TestKeywordClassification:
     """关键词降级 — 用真实中文测试"""
     router = RouterAgent()
-
-    def test_device_control_keywords(self):
-        assert self.router._keyword_classify("开始清扫") == "device_control"
-        assert self.router._keyword_classify("停止清扫") == "device_control"
-
-    def test_sql_keywords(self):
-        assert self.router._keyword_classify("本月卖了多少台") == "sql_query"
-
-    def test_report_keywords(self):
-        assert self.router._keyword_classify("生成使用报告") == "report"
 
     def test_qa_keywords(self):
         assert self.router._keyword_classify("怎么设置定时") == "qa"
 
     def test_troubleshoot_keywords(self):
         assert self.router._keyword_classify("E05错误码") == "troubleshoot"
-
-    def test_consumables_keywords(self):
-        assert self.router._keyword_classify("边刷多少钱") == "consumables"
 
     def test_empty_query_defaults_general(self):
         assert self.router._keyword_classify("") == "general"

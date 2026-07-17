@@ -1,7 +1,5 @@
 """FastAPI 入口 — 智能问答 Agent 系统"""
 
-import json as _json
-import os as _os
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -14,7 +12,6 @@ from smart_qa.config import settings
 from smart_qa.database.engine import close_db, init_db
 from smart_qa.database.redis import close_redis, init_redis
 from smart_qa.observability.logger import logger
-from smart_qa.observability.metrics import setup_metrics
 
 
 @asynccontextmanager
@@ -75,6 +72,7 @@ async def lifespan(app: FastAPI):
     # 预加载 BM25 知识库（含 FAQ JSON，优先从磁盘加载，免每次重启重建）
     try:
         from smart_qa.knowledge.bm25 import BM25Index
+        from smart_qa.rag.retrieval_utils import collect_knowledge_texts
 
         _bm25 = BM25Index()
 
@@ -82,33 +80,10 @@ async def lifespan(app: FastAPI):
             # 磁盘有缓存 → 直接使用
             pass
         else:
-            # 无缓存 → 从文件构建后保存
-            _docs = []
-            _knowledge_dir = settings.get_knowledge_dir()
-            for _root, _dirs, _files in _os.walk(_knowledge_dir):
-                for _f in _files:
-                    if _f.endswith(".md"):
-                        with open(_os.path.join(_root, _f), encoding="utf-8") as _fh:
-                            for _p in _fh.read().split("\n\n"):
-                                if len(_p.strip()) > 20:
-                                    _docs.append(_p.strip())
-            # 加载 FAQ JSON
-            for _faq_file in settings.get_faq_file_list():
-                try:
-                    with open(_faq_file, encoding="utf-8") as _fh:
-                        _faq_data = _json.load(_fh)
-                    _entries = _faq_data if isinstance(_faq_data, list) else _faq_data.get("entries", [])
-                    for _entry in _entries:
-                        _q = _entry.get("question", "")
-                        _a = _entry.get("answer", "")
-                        if _q and _a and len(_q + _a) > 30:
-                            _docs.append(f"问：{_q}\n答：{_a}")
-                    logger.info("FAQ 已加载 file={} entries={}", _faq_file, len(_entries))
-                except Exception as _e:
-                    logger.warning("FAQ 加载失败 file={} err={}", _faq_file, str(_e)[:80])
-
+            # 无缓存 → 用 collect_knowledge_texts 构建（含 enriched content + metadata）
+            _docs, _metas = collect_knowledge_texts()
             if _docs:
-                _bm25.build(_docs)
+                _bm25.build(_docs, _metas)
                 _bm25.save()
             else:
                 logger.warning("BM25 知识库为空")
@@ -121,7 +96,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("BM25 知识库加载失败: {}", e)
 
-    setup_metrics(app)
     # 初始化 LangGraph Store（PostgreSQL 长期记忆）
     try:
         from langgraph.store.postgres import PostgresStore
@@ -146,18 +120,7 @@ async def lifespan(app: FastAPI):
         logger.info("BM25 索引 + 向量预计算已预热")
     except Exception as e:
         logger.warning("BM25 预热失败: {}", str(e)[:80])
-        from langgraph.store.memory import InMemoryStore
 
-        set_store(InMemoryStore())
-
-    # OTel 可观测（有 OTEL_EXPORTER_OTLP_ENDPOINT 时生效）
-    try:
-        from smart_qa.observability.tracer import setup_otel, setup_phoenix
-
-        setup_otel(app=app)
-        setup_phoenix()
-    except Exception as e:
-        logger.debug("可观测接入异常: {}", e)
     yield
     try:
         await close_redis()
@@ -208,9 +171,10 @@ async def health():
 
     # Redis 连通性检查（2s 超时）
     try:
-        from smart_qa.database.redis import redis_client
-        if redis_client is not None:
-            await asyncio.wait_for(redis_client.ping(), timeout=2.0)
+        from smart_qa.database.redis import RedisClient
+        _redis_client = RedisClient.get_client()
+        if _redis_client is not None:
+            await asyncio.wait_for(_redis_client.ping(), timeout=2.0)
             services["redis"] = "ok"
         else:
             services["redis"] = "not_initialized"

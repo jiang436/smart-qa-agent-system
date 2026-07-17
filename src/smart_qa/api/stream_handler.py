@@ -46,9 +46,6 @@ class SSEStreamHandler:
             "router": ("意图识别", "正在理解您的问题..."),
             "qa": ("检索中", "正在查找相关资料..."),
             "troubleshoot": ("故障诊断", "正在排查问题..."),
-            "consumables": ("耗材查询", "正在查找耗材信息..."),
-            "device_control": ("设备控制", "正在下发指令..."),
-            "report": ("报告生成", "正在生成报告..."),
             "general_handler": ("处理中", "正在处理..."),
             "guard_check": ("校验", "正在检查回答质量..."),
             "memory_writer": ("保存", "正在保存对话..."),
@@ -84,10 +81,32 @@ class SSEStreamHandler:
             # 持久化
             await SSEStreamHandler._persist(result)
 
+            # 提取引用信息
+            retrieved_docs = result.get("retrieved_docs", [])
+            citations = []
+            seen = set()
+            for i, doc in enumerate(retrieved_docs[:5]):
+                content = doc.get("content", "")
+                if not content:
+                    continue
+                # 用 content 前 80 字符去重
+                key = content[:80]
+                if key in seen:
+                    continue
+                seen.add(key)
+                # source 优先取原始文件路径（在 chunk 的 source metadata 中）
+                file_src = doc.get("file", "") or doc.get("filename", "") or doc.get("src", "")
+                citations.append({
+                    "doc_id": str(doc.get("doc_id", i)),
+                    "source": file_src or doc.get("source", ""),
+                    "matched_sentence": content[:200],
+                })
+
             yield SSEStreamHandler._event("done", {
                 "message": "回答完成",
                 "intent": intent,
                 "session_id": result.get("session_id", session_id),
+                "citations": citations,
             })
 
         except Exception as e:

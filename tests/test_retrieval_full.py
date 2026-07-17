@@ -52,8 +52,6 @@ class TestRetrieverWithMockEmbedding:
             r.bm25.documents = []
             r._bm25_built = False
             r.reranker = None
-            r.hyde = MagicMock()
-            r.hyde.generate = MagicMock(return_value=None)
             return r
 
     def test_full_parallel_retrieve_flow(self, retriever):
@@ -94,8 +92,6 @@ class TestRetrieverWithMockLLM:
             r.bm25.documents = []
             r._bm25_built = False
             r.reranker = None
-            r.hyde = MagicMock()
-            r.hyde.generate = MagicMock(return_value=None)
             return r
 
     def test_rewrite_query_with_mock_llm(self, retriever):
@@ -136,8 +132,6 @@ class TestRetrieverEdgeCases:
         r.bm25.doc_count = 0
         r._bm25_built = False
         r.reranker = None
-        r.hyde = MagicMock()
-        r.hyde.generate = MagicMock(return_value=None)
         result = r.retrieve("", top_k=5)
         assert isinstance(result, dict)
         assert "docs" in result

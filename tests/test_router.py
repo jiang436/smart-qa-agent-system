@@ -18,19 +18,5 @@ class TestRouterAgent:
         assert self.router.classify("扫地机一直响停不下来") == "troubleshoot"
         assert self.router.classify("连不上Wi-Fi了") == "troubleshoot"
 
-    def test_classify_consumables_keywords(self):
-        assert self.router.classify("边刷该换了买什么型号") == "consumables"
-        assert self.router.classify("HEPA滤网多少钱") == "consumables"
-        assert self.router.classify("有没有便宜的边刷") == "consumables"
-
-    def test_classify_device_control_keywords(self):
-        assert self.router.classify("开始清扫") == "device_control"
-        assert self.router.classify("回去充电") == "device_control"
-        assert self.router.classify("检查我的设备状态") == "device_control"
-
-    def test_classify_report_keywords(self):
-        assert self.router.classify("生成我的使用报告") == "report"
-        assert self.router.classify("给我一份清洁周报") == "report"
-
     def test_classify_general_default(self):
         assert self.router.classify("你好啊") == "general"

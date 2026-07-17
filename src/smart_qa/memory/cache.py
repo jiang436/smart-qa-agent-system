@@ -65,7 +65,7 @@ class SemanticCache:
                 pass
 
         # 本地回退（写穿式缓存）
-        self._local_store: list[tuple[str, str, np.ndarray]] = []
+        self._local_store: list[tuple[str, str, np.ndarray, str]] = []  # (query, answer, vec, citations_json)
 
         if self.redis:
             logger.info(
@@ -83,12 +83,15 @@ class SemanticCache:
     # 公开接口（async）
     # ═══════════════════════════════════════
 
-    async def get(self, query: str) -> str | None:
+    async def get(self, query: str) -> dict | None:
         """查语义缓存
 
         流程:
           1. 有 Redis → Redis 遍历 + 余弦相似度
           2. 无 Redis → 本地 dict 遍历
+
+        Returns:
+            {"answer": str, "citations": list} | None
         """
         query_vec = self.embedding.encode(query)
 
@@ -97,7 +100,7 @@ class SemanticCache:
             return await self._search_redis(r, query_vec)
         return self._search_local(query_vec)
 
-    async def set(self, query: str, answer: str):
+    async def set(self, query: str, answer: str, citations: list | None = None):
         """写语义缓存（带 TTL）
 
         流程:
@@ -106,15 +109,16 @@ class SemanticCache:
         """
         query_vec = self.embedding.encode(query)
         vec_1d = query_vec[0]
+        citations_json = json.dumps(citations or [], ensure_ascii=False)
 
         r = self.redis
         if r is not None:
-            await self._store_redis(r, query, answer, vec_1d)
+            await self._store_redis(r, query, answer, vec_1d, citations_json)
 
         # 写穿：本地也存一份，减少 Redis 读放大
         from smart_qa.config import settings
 
-        self._local_store.append((query, answer, vec_1d))
+        self._local_store.append((query, answer, vec_1d, citations_json))
         if len(self._local_store) > settings.cache_lru_capacity:
             self._local_store.pop(0)
 
@@ -136,20 +140,11 @@ class SemanticCache:
     # Redis 后端
     # ═══════════════════════════════════════
 
-    async def _search_redis(self, r: Any, query_vec: np.ndarray) -> str | None:
-        """Redis 语义搜索 — SCAN + 余弦相似度
-
-        直接遍历全量缓存条目计算相似度。
-        对 < 10000 条规模足够，numpy 计算是微秒级的。
-        如果规模超 10 万条，可以升级到 Redis Stack FT.SEARCH + VSS。
-
-        Returns:
-            命中且超过阈值 → 答案文本
-            未命中 → None
-        """
+    async def _search_redis(self, r: Any, query_vec: np.ndarray) -> dict | None:
         start = time.time()
         best_score = -1.0
         best_answer: str | None = None
+        best_citations: list = []
 
         try:
             cursor = 0
@@ -168,37 +163,23 @@ class SemanticCache:
                     if score > best_score:
                         best_score = score
                         best_answer = answer
+                        try:
+                            best_citations = json.loads(data.get("citations", "[]"))
+                        except Exception:
+                            best_citations = []
                 if cursor == 0:
                     break
         except Exception as e:
             logger.warning("Redis 缓存搜索异常: {}", e)
-            return self._search_local(query_vec)  # 降级到本地
+            return self._search_local(query_vec)
 
         elapsed = time.time() - start
         if best_score >= self.threshold:
-            logger.info(
-                "Redis缓存命中 score={:.3f} elapsed={:.0f}ms",
-                best_score,
-                elapsed * 1000,
-            )
-            return best_answer
-
-        logger.debug(
-            "Redis缓存未命中 best_score={:.3f} threshold={} elapsed={:.0f}ms",
-            best_score,
-            self.threshold,
-            elapsed * 1000,
-        )
+            logger.info("Redis缓存命中 score={:.3f} elapsed={:.0f}ms", best_score, elapsed * 1000)
+            return {"answer": best_answer, "citations": best_citations}
         return None
 
-    async def _store_redis(self, r: Any, query: str, answer: str, vec_1d: np.ndarray):
-        """Redis 存储 — Hash 结构
-
-        Key:     semantic_cache:<md5(query)>
-        Fields:  query / answer / embedding(JSON) / created_at
-
-        TTL 自动过期缓存条目。
-        """
+    async def _store_redis(self, r: Any, query: str, answer: str, vec_1d: np.ndarray, citations_json: str = "[]"):
         try:
             key = _cache_key(query)
             await r.hset(
@@ -207,49 +188,40 @@ class SemanticCache:
                     "query": query[:200],
                     "answer": answer,
                     "embedding": json.dumps(vec_1d.tolist()),
+                    "citations": citations_json,
                     "created_at": str(time.time()),
                 },
             )
             if self.ttl > 0:
                 await r.expire(key, self.ttl)
         except Exception as e:
-            logger.warning(
-                "Redis 缓存写入失败: {} query={}",
-                e,
-                query[:60],
-            )
+            logger.warning("Redis 缓存写入失败: {} query={}", e, query[:60])
 
     # ═══════════════════════════════════════
     # 本地后端（写穿回退）
     # ═══════════════════════════════════════
 
-    def _search_local(self, query_vec: np.ndarray) -> str | None:
-        """本地语义搜索 — O(n) 遍历"""
+    def _search_local(self, query_vec: np.ndarray) -> dict | None:
         if not self._local_store:
             return None
 
         best_score = -1.0
         best_answer: str | None = None
+        best_citations: list = []
 
-        for _stored_query, answer, stored_vec in self._local_store:
+        for _stored_query, answer, stored_vec, citations_json in self._local_store:
             score = self.embedding.cosine_similarity(query_vec[0], stored_vec)
             if score > best_score:
                 best_score = score
                 best_answer = answer
+                try:
+                    best_citations = json.loads(citations_json)
+                except Exception:
+                    best_citations = []
 
         if best_score >= self.threshold:
-            logger.info(
-                "本地缓存命中 score={:.3f} threshold={}",
-                best_score,
-                self.threshold,
-            )
-            return best_answer
-
-        logger.debug(
-            "本地缓存未命中 best_score={:.3f} threshold={}",
-            best_score,
-            self.threshold,
-        )
+            logger.info("本地缓存命中 score={:.3f}", best_score)
+            return {"answer": best_answer, "citations": best_citations}
         return None
 
 

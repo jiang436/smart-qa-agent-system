@@ -32,20 +32,15 @@ def register_bm25(bm25: BM25Index) -> None:
     container.register("bm25", bm25)
 
 
-def collect_knowledge_texts() -> list[str]:
-    """收集所有可索引知识文本 — 与 Milvus 使用完全相同的数据源
-
-    来源:
-      1. data/knowledge/ 下的 md/txt/pdf（DocumentParser + SmartDocumentSplitter）
-      2. FAQ JSON 文件
-      3. 内置默认知识（目录为空时兜底）
-    """
+def collect_knowledge_texts() -> tuple[list[str], list[dict]]:
+    """收集所有可索引知识文本 + 元数据 — 与 Milvus 使用完全相同的数据源"""
     from smart_qa.knowledge.document_parser import DocumentParser
     from smart_qa.rag.chunking import SmartDocumentSplitter
 
     parser = DocumentParser()
-    splitter = SmartDocumentSplitter(chunk_size=500, chunk_overlap=50)
+    splitter = SmartDocumentSplitter(chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap)
     texts: list[str] = []
+    metas: list[dict] = []
 
     # ── 1. data/knowledge/ 目录 ──
     knowledge_dir = settings.get_knowledge_dir()
@@ -66,7 +61,15 @@ def collect_knowledge_texts() -> list[str]:
                 for c in chunks:
                     txt = c.get("content", "").strip()
                     if len(txt) > 20:
-                        texts.append(txt)
+                        # 用 _enrich_content 相同逻辑拼接 header
+                        from smart_qa.scripts.init_vector_store import _enrich_content
+                        enriched = _enrich_content(c)
+                        texts.append(enriched)
+                        metas.append({
+                            "source": f,
+                            "header": c.get("header", ""),
+                            "section": c.get("section", ""),
+                        })
 
     # ── 2. FAQ JSON ──
     for faq_file in settings.get_faq_file_list():
@@ -80,7 +83,9 @@ def collect_knowledge_texts() -> list[str]:
             q = entry.get("question", "")
             a = entry.get("answer", "")
             if q and a and len(q + a) > 30:
-                texts.append(f"问：{q}\n答：{a}")
+                txt = f"问：{q}\n答：{a}"
+                texts.append(txt)
+                metas.append({"source": os.path.basename(faq_file), "header": "", "section": ""})
 
     # ── 3. 默认知识（目录为空时兜底） ──
     if not texts:
@@ -95,7 +100,7 @@ def collect_knowledge_texts() -> list[str]:
         except ImportError:
             pass
 
-    return texts
+    return texts, metas
 
 
 def load_knowledge_bm25() -> BM25Index:
@@ -109,9 +114,9 @@ def load_knowledge_bm25() -> BM25Index:
         return container.get("bm25")
 
     bm = BM25Index()
-    docs = collect_knowledge_texts()
+    docs, metas = collect_knowledge_texts()
     if docs:
-        bm.build(docs)
+        bm.build(docs, metas)
         container.register("bm25", bm)
         # 预计算所有文档的 BGE 向量（用于 L3 BM25 召回后的语义重排）
         emb = get_embedding()

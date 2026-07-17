@@ -13,7 +13,6 @@ class TestGraphStructure:
         assert "router" in nodes
         assert "qa" in nodes
         assert "troubleshoot" in nodes
-        assert "consumables" in nodes
         assert "guard_check" in nodes
         assert "memory_writer" in nodes
 

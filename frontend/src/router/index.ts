@@ -9,21 +9,6 @@ const router = createRouter({
       component: () => import('@/views/ChatView.vue'),
     },
     {
-      path: '/troubleshoot',
-      name: 'troubleshoot',
-      component: () => import('@/views/TroubleshootView.vue'),
-    },
-    {
-      path: '/consumables',
-      name: 'consumables',
-      component: () => import('@/views/ConsumablesView.vue'),
-    },
-    {
-      path: '/report',
-      name: 'report',
-      component: () => import('@/views/ReportView.vue'),
-    },
-    {
       path: '/admin',
       name: 'admin',
       component: () => import('@/views/AdminView.vue'),

@@ -205,18 +205,47 @@ async def knowledge_status(db: AsyncSession = Depends(get_db)):
 
 @router.get("/files")
 async def list_uploaded_files(db: AsyncSession = Depends(get_db)):
+    # 数据库记录（API 上传的）
     result = await db.execute(select(KnowledgeFile).order_by(KnowledgeFile.uploaded_at.desc()))
-    files = [
-        {
+    db_files = {
+        r.filename: {
             "filename": r.filename,
             "file_type": r.file_type,
             "chunks": r.chunks,
             "dimension": r.dimension,
             "uploaded_at": r.uploaded_at.isoformat(),
+            "source": "upload",
         }
         for r in result.scalars().all()
-    ]
-    return {"files": files}
+    }
+
+    # 文件系统扫描（直接放到 data/knowledge 目录的）
+    import os
+
+    from smart_qa.config import settings
+    from smart_qa.knowledge.document_parser import DocumentParser
+
+    fs_files = []
+    knowledge_dir = settings.get_knowledge_dir()
+    if os.path.isdir(knowledge_dir):
+        for root, _dirs, filenames in os.walk(knowledge_dir):
+            for fn in filenames:
+                if not DocumentParser.is_supported(os.path.join(root, fn)):
+                    continue
+                if fn not in db_files:
+                    ext = fn.rsplit(".", 1)[-1] if "." in fn else ""
+                    fs_files.append({
+                        "filename": fn,
+                        "file_type": ext,
+                        "chunks": 0,
+                        "dimension": 0,
+                        "uploaded_at": "",
+                        "source": "filesystem",
+                    })
+
+    # 合并：DB 文件优先，FS 文件补充
+    all_files = list(db_files.values()) + fs_files
+    return {"files": all_files, "total": len(all_files)}
 
 
 # ── BM25 ──
@@ -245,10 +274,10 @@ async def bm25_rebuild():
     from smart_qa.knowledge.bm25 import BM25Index
     from smart_qa.rag.retrieval import _collect_knowledge_texts, set_shared_bm25
 
-    docs = _collect_knowledge_texts()
+    docs, metas = _collect_knowledge_texts()
 
     bm25 = BM25Index()
-    bm25.build(docs)
+    bm25.build(docs, metas)
     bm25.save()
 
     set_shared_bm25(bm25)

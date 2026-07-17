@@ -18,17 +18,13 @@ Usage:
 import asyncio
 import hashlib
 import json
-import os
 import re
 
 from smart_qa.config import settings
 from smart_qa.di import container
-from smart_qa.exceptions import BM25Error, RetrievalError, VectorStoreError
 from smart_qa.knowledge.bm25 import BM25Index
 from smart_qa.knowledge.vector_store import get_embedding
 from smart_qa.observability.logger import logger
-from smart_qa.rag.hyde import HyDE
-from smart_qa.rag.reranker import Reranker
 from smart_qa.rag.retrieval_utils import (
     STOP_WORDS,
     collect_knowledge_texts,
@@ -46,10 +42,10 @@ _collect_knowledge_texts = collect_knowledge_texts
 class MultiLayerRetriever:
     """多层召回引擎: 语义→改写→关键词→LLM"""
 
-    L1_THRESHOLD = 0.75
-    L1_MIN_HITS = 3
-    L2_THRESHOLD = 0.6
-    L2_MIN_HITS = 2
+    L1_THRESHOLD = 0.45
+    L1_MIN_HITS = 2
+    L2_THRESHOLD = 0.35
+    L2_MIN_HITS = 1
 
     def __init__(self, milvus_client=None, llm_client=None, bm25_index=None):
         self.embedding = get_embedding()
@@ -57,14 +53,8 @@ class MultiLayerRetriever:
         self.llm = llm_client
         self.bm25 = bm25_index or _load_knowledge_bm25() or BM25Index()
         self._bm25_built = self.bm25.doc_count > 0
-        from smart_qa.config import settings
 
-        self.reranker = Reranker(
-            llm_client=llm_client,
-            backend=settings.reranker_backend,
-            model_name=settings.reranker_model_path or "BAAI/bge-reranker-v2-m3",
-        )
-        self.hyde = HyDE(llm_client=llm_client)
+        self.reranker = None
 
     # ── 主入口 ──
 
@@ -78,20 +68,7 @@ class MultiLayerRetriever:
           4. Reranker 精确打分 → 精选 top_k
           5. 句子窗口展开 → 拼接上下文
         """
-        # ── 短路: 短查询 / 纯命令 → 跳过 LLM 耗时步骤 ──
-        is_short = len(query) <= 5 or (
-            len(query) <= 8 and not any(kw in query for kw in ["怎么", "如何", "什么", "为什么"])
-        )
-
-        # 0. Self-Query: 仅长查询启用
-        meta_filter = self._parse_metadata_filter(query) if (self.llm and not is_short) else {}
-
-        # HyDE: 仅中长查询启用（短查询 embedding 已足够精确）
-        hyde_text = self.hyde.generate(query) if (self.llm and not is_short) else None
-        semantic_query = hyde_text if hyde_text else query
-
-        # 内部多取一些, 供 reranker 精选
-        retrieve_k = max(top_k * 3, 20)
+        semantic_query = query
 
         # 0.5 Multi-Query: 仅复杂/长查询启用
         sub_queries = self._decompose_query(query) if (self.llm and len(query) > 15) else []
@@ -107,16 +84,16 @@ class MultiLayerRetriever:
                                      f"拆分为 {len(sub_queries)} 个子问题, 合并 {len(merged)} 条")
                 logger.info("Multi-Query: {} → {} sub-queries, merged {} docs",
                              query[:60], len(sub_queries), len(merged))
-                return self._post_process(result, query, top_k, retrieve_k, meta_filter)
+                return result
             else:
                 sub_queries = []  # 合并无结果 → 降级走正常检索
 
         if mode == "parallel":
-            result = self._parallel_retrieve(query, semantic_query, retrieve_k)
+            result = self._parallel_retrieve(query, semantic_query, top_k)
         else:
-            result = self._cascade_retrieve(query, semantic_query, retrieve_k)
+            result = self._cascade_retrieve(query, semantic_query, top_k)
 
-        return self._post_process(result, query, top_k, retrieve_k, meta_filter)
+        return result
 
     def _post_process(self, result, query, top_k, retrieve_k, meta_filter):
         """检索后处理: 元数据过滤 → ReRank → 窗口展开"""
@@ -236,10 +213,12 @@ class MultiLayerRetriever:
         if self.milvus:
             try:
                 query_vec = self.embedding.encode(query)
+                vec = [float(x) for x in query_vec.ravel()]
                 results = self.milvus.search(
-                    data=[query_vec.tolist()],
+                    collection_name=settings.milvus_collection,
+                    data=[vec],
                     anns_field="vector",
-                    param={"metric_type": "COSINE", "params": {"ef": 128}},
+                    search_params={"metric_type": "COSINE", "params": {"ef": 128}},
                     limit=top_k,
                     output_fields=["content", "source"],
                 )
@@ -247,7 +226,7 @@ class MultiLayerRetriever:
                     {
                         "content": hit.entity.get("content", ""),
                         "score": round(hit.score, 4),
-                        "source": "L1_semantic",
+                        "source": hit.entity.get("source", "L1_semantic"),
                         "doc_id": hit.id,
                     }
                     for hits in results
@@ -515,10 +494,6 @@ class MultiLayerRetriever:
             key=lambda x: x["rrf_score"],
             reverse=True,
         )
-
-        # 标注融合来源
-        for d in sorted_docs[:final_top_k]:
-            d["source"] = "RRF_fusion"
 
         return sorted_docs[:final_top_k]
 

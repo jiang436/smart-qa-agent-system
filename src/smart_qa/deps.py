@@ -26,13 +26,11 @@ Usage:
 
 from __future__ import annotations
 
-from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from langchain_openai import ChatOpenAI
 
 from smart_qa.config import settings
-from smart_qa.di import container
 from smart_qa.security import RateLimiter, SensitiveFilter
 
 if TYPE_CHECKING:

@@ -8,7 +8,6 @@ import json
 import os
 from typing import Literal
 
-from smart_qa.agent.prompts.loader import load_cot_prompt
 from smart_qa.agent.state_utils import extract_user_query
 from smart_qa.observability.logger import logger
 
@@ -29,67 +28,6 @@ def _load_intent_keywords() -> dict[str, list[str]]:
 
 # ── 内置默认关键词映射（外部 JSON 不可用时的兜底）──
 _BUILTIN_INTENT_KEYWORDS: dict[str, list[str]] = {
-        "device_control": [
-            "开始清扫",
-            "开始打扫",
-            "停止清扫",
-            "停止打扫",
-            "暂停",
-            "充电",
-            "回充",
-            "回去充电",
-            "设备状态",
-            "状态",
-            "模式",
-            "安静模式",
-            "强力模式",
-            "定时清扫",
-            "定时",
-            "预约清扫",
-        ],
-        "sql_query": [
-            "多少",
-            "有几个",
-            "有哪些",
-            "统计",
-            "排行",
-            "最多",
-            "最少",
-            "排名",
-            "占比",
-            "总共",
-            "本月",
-            "上月",
-            "今年",
-            "查询",
-            "计算",
-            "卖出",
-            "卖了",
-            "销售",
-            "订单",
-            "买了",
-            "购买",
-            "顶级",
-            "top",
-            "数量",
-            "次数",
-            "用户数",
-            "会话数",
-            "记录",
-            "日志",
-        ],
-        "report": [
-            "报告",
-            "使用情况",
-            "使用数据",
-            "清洁记录",
-            "月度报告",
-            "使用分析",
-            "看看数据",
-            "周报",
-            "月报",
-            "报表",
-        ],
         "qa": [
             "怎么",
             "如何",
@@ -150,23 +88,6 @@ _BUILTIN_INTENT_KEYWORDS: dict[str, list[str]] = {
             "指示灯",
             "卡住",
         ],
-        "consumables": [
-            "换",
-            "买",
-            "购",
-            "耗材",
-            "边刷",
-            "滤网",
-            "主刷",
-            "拖布",
-            "配件",
-            "多少钱",
-            "价格",
-            "哪里买",
-            "原装",
-            "第三方",
-            "套装",
-        ],
     }
 
 # ── 模块级加载（外部 JSON 优先，内置兜底）──
@@ -187,17 +108,7 @@ class RouterAgent:
             llm_client: LLM 客户端（用于意图分类），不传则使用关键词匹配
         """
         self.llm = llm_client
-        self._cot_prompt = None
         self._intent_keywords = INTENT_KEYWORDS
-
-    def _get_cot_prompt(self) -> str:
-        """获取 CoT 路由提示模板（缓存）"""
-        if self._cot_prompt is None:
-            try:
-                self._cot_prompt = load_cot_prompt("router")
-            except FileNotFoundError:
-                self._cot_prompt = ""
-        return self._cot_prompt
 
     async def route(self, state: dict) -> dict:
         """意图分类节点 — pipeline: 预处理 → 快检 → 状态 → 分类 → 分流"""
@@ -270,10 +181,6 @@ class RouterAgent:
             state["task_memory"] = {}
             logger.info("诊断中用户切换话题 query={}", query[:60])
 
-        if task.get("pending_purchase"):
-            state["intent"] = "consumables"
-            return state
-
         return None
 
     # ── Pipeline Stage 3: 多问题检测 ──
@@ -283,7 +190,7 @@ class RouterAgent:
         import re
 
         questions = re.findall(r"[？?]", query)
-        lines = [l.strip() for l in query.split("\n") if l.strip() and re.search(r"[？?。]$", l.strip())]
+        lines = [ln.strip() for ln in query.split("\n") if ln.strip() and re.search(r"[？?。]$", ln.strip())]
         return len(questions) > 1 or len(lines) > 1
 
     # ── Pipeline Stage 4: LLM 分类 ──
@@ -292,17 +199,11 @@ class RouterAgent:
         """LLM 意图分类（带对话历史）"""
         # 诊断切换话题时可能已预分类，直接复用
         cached = state.pop("intent", None)
-        if cached in ("qa", "consumables", "general"):
+        if cached in ("qa", "troubleshoot", "general"):
             return cached
 
         history = self._build_history_context(state)
-
-        from smart_qa.observability.tracer import get_tracer
-
-        tracer = get_tracer()
-        with tracer.start_span("router.classify", attributes={"query": query[:100]}):
-            intent = await self._classify_intent(query, history)
-
+        intent = await self._classify_intent(query, history)
         logger.info("LLM意图分类 intent={} query={}", intent, query[:80])
         return intent
 
@@ -314,15 +215,19 @@ class RouterAgent:
             state["intent"] = "qa"
             return state
 
-        # sql_query / troubleshoot / consumables / device_control / report → 直接走专属场景
-        state["intent"] = intent
-        state["scenario"] = intent
+        if intent == "troubleshoot":
+            state["intent"] = intent
+            state["scenario"] = intent
+            return state
+
+        # 其他未知意图 → 兜底 qa
+        state["intent"] = "qa"
         return state
 
     @staticmethod
     def dispatch(
         state: dict,
-    ) -> Literal["qa", "troubleshoot", "consumables", "device_control", "report", "sql_query", "general", "done"]:
+    ) -> Literal["qa", "troubleshoot", "general", "done"]:
         """根据意图分发到对应场景
 
         FAQ 命中（final_answer 已设）→ "done"，直接返回，跳过 RAG
@@ -332,8 +237,7 @@ class RouterAgent:
             return "done"
 
         intent = state.get("intent", "general")
-        valid_intents = ["qa", "troubleshoot", "consumables", "report", "device_control", "sql_query", "general"]
-        if intent not in valid_intents:
+        if intent not in ("qa", "troubleshoot", "general"):
             intent = "general"
         return intent
 
@@ -367,9 +271,11 @@ class RouterAgent:
         current_step = task.get("current_step", 0)
         tree = None
         if fault_type:
-            from smart_qa.scenarios.troubleshoot_scenario import DIAGNOSIS_TREE
-
-            tree = DIAGNOSIS_TREE.get(fault_type)
+            try:
+                from smart_qa.scenarios.troubleshoot_scenario import DIAGNOSIS_TREE
+                tree = DIAGNOSIS_TREE.get(fault_type)
+            except ImportError:
+                pass
         current_question = ""
         if tree and current_step < len(tree.get("steps", [])):
             current_question = tree["steps"][current_step].get("question", "")
@@ -424,11 +330,11 @@ class RouterAgent:
 
         cot = load_cot_prompt("router")
         history_block = f"对话历史:\n{history}\n\n" if history else ""
-        prompt = f"判断意图(qa/troubleshoot/consumables/report/device_control/general):\n{cot}\n\n{history_block}用户: {query}\n意图:"
+        prompt = f"判断意图(qa/troubleshoot/general):\n{cot}\n\n{history_block}用户: {query}\n意图:"
         try:
             response = await self.llm.ainvoke(prompt)
             content = response.content if hasattr(response, "content") else str(response)
-            for i in ["qa", "troubleshoot", "consumables", "report", "device_control", "sql_query", "general"]:
+            for i in ["qa", "troubleshoot", "general"]:
                 if i in content.lower():
                     return i
         except Exception:
@@ -443,7 +349,7 @@ class RouterAgent:
           - 错误码 +3 权重（强信号）
           - 多类别冲突时按优先级化解
         """
-        scores = {"qa": 0, "troubleshoot": 0, "consumables": 0, "report": 0, "device_control": 0, "sql_query": 0}
+        scores = {"qa": 0, "troubleshoot": 0, "general": 0}
 
         for intent, keywords in self._intent_keywords.items():
             for kw in keywords:
@@ -488,23 +394,15 @@ class RouterAgent:
         if any(p in query for p in ["能控制", "可以控制", "支持控制", "能用"]):
             scores["qa"] += 3.0
 
-        # 规则4.5: 代词开头的短查询（"它X"/"那X"/"这个"）→ 大概率是追问上文，不做设备控制
+        # 规则4.5: 代词开头的短查询（"它X"/"那X"/"这个"）→ 大概率是追问上文
         pronoun_starts = ["它", "那", "这", "这个", "那个", "这些"]
         if any(query.startswith(p) for p in pronoun_starts) and len(query) <= 10:
             scores["qa"] += 2.0
-            scores["device_control"] = max(0, scores["device_control"] - 1)
-
-        # 规则5: device_control 精确命令匹配（不含疑问词）
-        device_commands = ["开始清扫", "开始打扫", "停止清扫", "回去充电", "暂停清扫", "查看状态"]
-        if any(query.strip() == cmd for cmd in device_commands) and \
-           not any(p in query for p in qa_inquiry_patterns):
-            scores["device_control"] += 4.0
 
         # ── 取最高分 ──
         max_score = max(scores.values())
         if max_score >= 1:
-            # 同分时按优先级: troubleshoot > device_control > consumables > qa > sql_query > report
-            priority_order = ["troubleshoot", "device_control", "consumables", "qa", "sql_query", "report"]
+            priority_order = ["troubleshoot", "qa", "general"]
             for intent in priority_order:
                 if scores[intent] == max_score:
                     return intent

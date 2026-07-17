@@ -54,9 +54,12 @@ export const useChatStore = defineStore('chat', () => {
     if (msg) msg.content += token
   }
 
-  function finishStreaming(msgId: string, intent?: string) {
+  function finishStreaming(msgId: string, intent?: string, citations?: Citation[]) {
     const msg = messages.value.find(m => m.id === msgId)
-    if (msg) msg.isStreaming = false
+    if (msg) {
+      msg.isStreaming = false
+      if (citations?.length) msg.citations = citations
+    }
     isProcessing.value = false
     if (intent) currentIntent.value = intent
   }

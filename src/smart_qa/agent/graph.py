@@ -29,11 +29,7 @@ from smart_qa.agent.guards.loop_detector import LoopDetector
 from smart_qa.agent.state import AgentState
 from smart_qa.config import settings
 from smart_qa.observability.logger import logger
-from smart_qa.scenarios.consumables_scenario import ConsumablesScenario
-from smart_qa.scenarios.device_control_scenario import DeviceControlScenario
 from smart_qa.scenarios.qa_scenario import QAScenario
-from smart_qa.scenarios.report_scenario import ReportScenario
-from smart_qa.scenarios.sql_scenario import SQLScenario
 from smart_qa.scenarios.troubleshoot_scenario import TroubleshootScenario
 
 _memory = MemorySaver()
@@ -131,7 +127,7 @@ async def memory_writer_node(state: dict[str, Any], config: RunnableConfig | Non
         llm = container.get("llm")
         prompt = (
             "从用户消息中提取以下信息，只输出 JSON，没有的字段填 null：\n"
-            "1. device_model: 扫地机器人型号 (X30 Pro/X20 Pro/T10/R10 等)\n"
+            "1. device_model: 扫地机器人型号（从对话中识别，如用户提到具体型号）\n"
             "2. preferred_mode: 偏好模式 (quiet/strong/standard)\n"
             "3. home_layout: 户型描述 (如\"三室两厅\")\n\n"
             f"用户消息: {query}\n"
@@ -196,23 +192,6 @@ async def memory_writer_node(state: dict[str, Any], config: RunnableConfig | Non
     return state
 
 
-# ═══════════════════════════════════════════
-# 模式匹配工具
-# ═══════════════════════════════════════════
-
-_DEVICE_MODELS = ["X30 Pro", "X20 Pro", "T10", "X30", "X20", "R10", "R20"]
-_MODE_KEYWORDS = {
-    "安静模式": "quiet",
-    "静音模式": "quiet",
-    "安静": "quiet",
-    "强力模式": "strong",
-    "强力": "strong",
-    "标准模式": "standard",
-    "标准": "standard",
-}
-_HOME_PATTERN = re.compile(r"([一二两三四五六七八九十\d]+)[室房](?:[一二两三四五六七八九十\d]+厅)?")
-
-
 def _extract_user_query(state: dict[str, Any]) -> str:
     messages = state.get("messages", [])
     for msg in reversed(messages):
@@ -225,25 +204,6 @@ def _extract_user_query(state: dict[str, Any]) -> str:
         if role in ("human", "user") and content:
             return content
     return ""
-
-
-def _extract_device(text: str) -> str | None:
-    for model in _DEVICE_MODELS:
-        if model.lower() in text.lower():
-            return model
-    return None
-
-
-def _extract_preferred_mode(text: str) -> str | None:
-    for keyword, value in _MODE_KEYWORDS.items():
-        if keyword in text:
-            return value
-    return None
-
-
-def _extract_home_layout(text: str) -> str | None:
-    m = _HOME_PATTERN.search(text)
-    return m.group(0) if m else None
 
 
 # ═══════════════════════════════════════════
@@ -351,10 +311,6 @@ def build_graph(llm_client: Any = None) -> StateGraph:
     workflow.add_node("router", router_agent.route)
     workflow.add_node("qa", QAScenario.run)
     workflow.add_node("troubleshoot", TroubleshootScenario.run)
-    workflow.add_node("consumables", ConsumablesScenario.run)
-    workflow.add_node("device_control", DeviceControlScenario.run)
-    workflow.add_node("report", ReportScenario.run)
-    workflow.add_node("sql_query", SQLScenario.run)
     workflow.add_node("general_handler", handle_general)
     workflow.add_node("guard_check", loop_detector.check)
     workflow.add_node("memory_writer", memory_writer_node)
@@ -369,10 +325,6 @@ def build_graph(llm_client: Any = None) -> StateGraph:
         {
             "qa": "qa",
             "troubleshoot": "troubleshoot",
-            "consumables": "consumables",
-            "device_control": "device_control",
-            "report": "report",
-            "sql_query": "sql_query",
             "general": "general_handler",
             "done": "guard_check",
         },
@@ -380,10 +332,6 @@ def build_graph(llm_client: Any = None) -> StateGraph:
 
     workflow.add_edge("qa", "guard_check")
     workflow.add_edge("troubleshoot", "guard_check")
-    workflow.add_edge("consumables", "guard_check")
-    workflow.add_edge("device_control", "guard_check")
-    workflow.add_edge("report", "guard_check")
-    workflow.add_edge("sql_query", "guard_check")
     workflow.add_edge("general_handler", "guard_check")
 
     workflow.add_conditional_edges(

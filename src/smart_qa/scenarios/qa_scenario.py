@@ -59,6 +59,15 @@ class QAScenario:
             cls._semantic_cache = SemanticCache(redis_client=redis_client)
         return cls._semantic_cache
 
+    @staticmethod
+    async def _enhance_for_cache(query: str, state: dict) -> str:
+        """多轮对话查询重写，确保缓存 key 包含上下文信息"""
+        try:
+            rag = QAScenario._get_rag_agent()
+            return rag._enrich_query_with_history(query, state)
+        except Exception:
+            return query
+
     @classmethod
     def _get_compressor(cls, llm_client=None) -> MemoryCompressor:
         """懒加载记忆压缩器"""
@@ -87,11 +96,17 @@ class QAScenario:
 
         state.get("user_id", "anonymous")
 
+        # 多轮上下文重写：先增强查询再查缓存
         cache = QAScenario._get_cache()
-        cached_answer = await cache.get(query)
-        if cached_answer:
-            state["final_answer"] = cached_answer
-            state["retrieved_docs"] = []
+        enhanced_query = await QAScenario._enhance_for_cache(query, state)
+        cached = await cache.get(enhanced_query)
+        if cached:
+            state["final_answer"] = cached["answer"]
+            # 缓存中的 citations 转回 retrieved_docs 格式（兼容 stream_handler）
+            state["retrieved_docs"] = [
+                {"content": c.get("matched_sentence", ""), "source": c.get("source", ""), "doc_id": c.get("doc_id", "")}
+                for c in cached.get("citations", [])
+            ]
             QAScenario._log_cache_hit(query)
             return state
 
@@ -119,7 +134,12 @@ class QAScenario:
             )
 
         if len(final_answer) >= 10:
-            await cache.set(query, final_answer)
+            docs = state.get("retrieved_docs", [])
+            citations = [
+                {"doc_id": str(d.get("doc_id", i)), "source": d.get("source", ""), "matched_sentence": (d.get("content", "") or "")[:200]}
+                for i, d in enumerate(docs[:5]) if d.get("content")
+            ]
+            await cache.set(enhanced_query, final_answer, citations)
 
         elapsed = time.time() - start_time
         if elapsed > 3.0:

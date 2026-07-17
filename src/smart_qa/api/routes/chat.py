@@ -119,10 +119,30 @@ async def chat(
         except Exception as e:
             logger.debug("PG 对话保存失败: {}", e)
 
+        # 提取引用
+        retrieved_docs = result.get("retrieved_docs", [])
+        citations = []
+        seen = set()
+        for i, doc in enumerate(retrieved_docs[:5]):
+            content = doc.get("content", "")
+            if not content:
+                continue
+            key = content[:80]
+            if key in seen:
+                continue
+            seen.add(key)
+            file_src = doc.get("file", "") or doc.get("filename", "") or doc.get("src", "")
+            citations.append({
+                "doc_id": str(doc.get("doc_id", i)),
+                "source": file_src or doc.get("source", ""),
+                "matched_sentence": content[:200],
+            })
+
         return ChatResponse(
             answer=answer or "抱歉，处理您的问题时出现了错误。",
             session_id=result.get("session_id", session_id),
             intent=intent,
+            citations=citations,
         )
     except Exception as e:
         logger.error("对话异常 user={} err={}", request.user_id, str(e))

@@ -35,12 +35,11 @@ class Settings(BaseSettings):
 
     # ── Knowledge Data Paths ──
     knowledge_dir: str = "data/knowledge"
-    faq_files: str = "data/faq_knowledge_base.json,data/faq_consumables.json,data/faq_troubleshooting.json"
-    diagnosis_tree_path: str = ""  # 故障决策树 JSON 路径，为空则使用内置默认
+    faq_files: str = "data/faq_knowledge_base.json"
 
     # ── Business Config ──
     support_phone: str = ""  # 售后客服热线
-    default_device_model: str = "X30 Pro"
+    default_device_model: str = ""
     company_name: str = "智家科技"
     agent_name: str = "小智"
 
@@ -63,18 +62,18 @@ class Settings(BaseSettings):
     loop_dead_end_window: int = 5  # 死胡同检测窗口 (最近 N 步)
 
     # ── Retrieval ──
-    retrieval_l1_threshold: float = 0.75  # L1 语义检索平均分阈值
-    retrieval_l1_min_docs: int = 3  # L1 语义检索最少文档数
-    retrieval_l2_threshold: float = 0.6  # L2 改写检索平均分阈值
-    retrieval_l2_min_docs: int = 2  # L2 改写检索最少文档数
+    retrieval_l1_threshold: float = 0.45  # L1 语义检索平均分阈值
+    retrieval_l1_min_docs: int = 2  # L1 语义检索最少文档数
+    retrieval_l2_threshold: float = 0.35  # L2 改写检索平均分阈值
+    retrieval_l2_min_docs: int = 1  # L2 改写检索最少文档数
     retrieval_top_k: int = 5  # 默认返回文档数
     retrieval_crag_max_retries: int = 2  # C-RAG 最大重试次数
     retrieval_crag_quality_high: float = 0.5  # C-RAG 高质量阈值
     retrieval_crag_quality_medium: float = 0.3  # C-RAG 中等质量阈值
 
     # ── Chunking ──
-    chunk_size: int = 500
-    chunk_overlap: int = 50
+    chunk_size: int = 800
+    chunk_overlap: int = 100
 
     # ── Memory ──
     short_term_window: int = 6  # 短期记忆窗口 (消息数)

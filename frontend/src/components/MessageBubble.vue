@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import type { Message } from '@/stores/chat'
-import IntentBadge from './IntentBadge.vue'
 import CitationCard from './CitationCard.vue'
 import { computed } from 'vue'
 
@@ -19,9 +18,6 @@ const isUser = computed(() => props.msg.role === 'user')
           : 'glass-card rounded-2xl rounded-bl-md px-5 py-3 shadow-e1'
       ]"
     >
-      <!-- Intent badge -->
-      <IntentBadge v-if="msg.intent && !isUser" :intent="msg.intent" class="mb-2" />
-
       <!-- Content -->
       <div
         v-if="msg.isStreaming"

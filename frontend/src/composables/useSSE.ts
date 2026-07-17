@@ -26,8 +26,8 @@ export function useSSE() {
       req,
       (token) => chat.appendToken(msgId, token),
       (stage) => chat.setStage(stage),
-      (intent, sid) => {
-        chat.finishStreaming(msgId, intent)
+      (intent, sid, citations) => {
+        chat.finishStreaming(msgId, intent, citations)
         if (sid) chat.sessionId = sid
         else if (!chat.sessionId) chat.sessionId = crypto.randomUUID()
       },
