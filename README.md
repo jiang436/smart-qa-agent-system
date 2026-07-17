@@ -196,17 +196,18 @@ cd frontend && npm install && npm run dev            # 启动 http://localhost:5
 
 <h2 id="7-highlights">7. 技术亮点</h2>
 
-### 1. 四层召回兜底 + RRF 融合：Recall@3 从 0.75 提升到 1.00（实测）
+### 1. 四层召回 + RRF 融合 + Cross-Encoder 重排序：Recall@3 从 0.75 到 1.00（实测）
 
-纯 BM25 关键词检索存在 2 个盲区：错误码/型号分词错误（`E06` → `E`/`0`/`6`）、语义同义词无法匹配（"噪音大"↔"异响"）。设计了四层逐级降级（L1 语义 → L2 改写 → L3 BM25 → L4 LLM）加 RRF 并行融合，12 条 Ground Truth 的 Recall@3 从 BM25 独用的 0.75 提升到融合后的 **1.00**，Hit@5 从 83% 提升到 **100%**。
+纯 BM25 存在 2 个盲区：错误码分词错误（`E06` → `E`/`0`/`6`）、语义同义词无法匹配（"噪音大"↔"异响"）。逐级加入 L1 语义检索、RRF 融合、Cross-Encoder 重排序：Recall 从 0.75 提升到 **1.00**，Precision 从 0.44 提升到 **0.67**。
 
-| 指标 | BM25 only | RRF Fusion | 提升 |
+| 指标 | BM25 only | RRF Fusion | RRF + Reranker |
 |------|:--:|:--:|:--:|
-| Recall@3 | 0.75 | **1.00** | +33% |
-| Recall@5 | 0.79 | **1.00** | +27% |
-| Precision@3 | 0.44 | **0.56** | +27% |
-| MRR | 0.63 | **0.76** | +21% |
-| Hit@5 | 83% | **100%** | +17% |
+| Recall@3 | 0.75 | **1.00** | **1.00** |
+| Precision@3 | 0.44 | 0.56 | **0.67** |
+| MRR | 0.63 | 0.76 | **0.83** |
+| Hit@5 | 83% | 100% | **100%** |
+
+> Reranker 参考 RAGFlow 设计：Cross-Encoder (bge-reranker-large) + 关键词重叠分混合打分，统一归一化到 [0,1]，模型不可用时自动降级 heuristic。
 
 ### 2. BM25 性能优化：42ms → 0.22ms，190 倍提升（实测）
 
@@ -288,16 +289,14 @@ cd frontend && npm install && npm run dev            # 启动 http://localhost:5
 
 > 29 个失败均为基础设施依赖（PostgreSQL/Milvus 连接），Mock 测试 100% 通过。
 
-### 检索质量评测（实测，12 条 Ground Truth）
+### 检索质量评测（12 条 Ground Truth，121 篇文档）
 
-| 指标 | BM25 only | Semantic only | **RRF Fusion** |
-|------|:--:|:--:|:--:|
-| Recall@3 | 0.75 | 0.83 | **1.00** |
-| Recall@5 | 0.79 | 1.00 | **1.00** |
-| Precision@3 | 0.44 | 0.58 | **0.56** |
-| Precision@5 | 0.38 | 0.55 | **0.53** |
-| MRR | 0.63 | 0.79 | **0.76** |
-| Hit@5 | 83% | 100% | **100%** |
+| 指标 | BM25 only | Semantic only | RRF Fusion | RRF + Reranker |
+|------|:--:|:--:|:--:|:--:|
+| Recall@3 | 0.75 | 0.83 | **1.00** | **1.00** |
+| Precision@3 | 0.44 | 0.58 | 0.56 | **0.67** |
+| MRR | 0.63 | 0.79 | 0.76 | **0.83** |
+| Hit@5 | 83% | 100% | 100% | **100%** |
 
 ### 忠实性
 
