@@ -1,4 +1,4 @@
-# Smart QA Agent — 基于 LangGraph 的多 Agent 智能问答系统
+# Smart QA Agent — 基于 LangGraph + RAG 的智能问答系统
 
 > 智能家居客服场景的 RAG 问答系统。四层召回 + RRF 融合 + Cross-Encoder 重排序 + GraphRAG。
 >
