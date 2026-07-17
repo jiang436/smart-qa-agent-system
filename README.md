@@ -45,13 +45,13 @@
 ### 效果展示
 
 <div align="center">
-<img src="docs/images/前端界面.png" width="750"/>
+<img src="docs/images/前端界面.png"/>
 <p>智能问答主界面 — 知识问答 + 引用来源</p>
 <br/>
-<img src="docs/images/多轮连续对话.png" width="750"/>
+<img src="docs/images/多轮连续对话.png"/>
 <p>多轮连续对话 — 上下文记忆与指代消解</p>
 <br/>
-<img src="docs/images/后台管理界面.png" width="750"/>
+<img src="docs/images/后台管理界面.png"/>
 <p>后台管理界面 — 知识库上传与索引管理</p>
 </div>
 
