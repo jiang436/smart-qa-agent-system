@@ -89,8 +89,9 @@ class Settings(BaseSettings):
     reflection_max_rounds: int = 3  # 自我反思最大迭代次数
 
     # ── Reranker ──
-    reranker_backend: str = "local"  # local / llm
-    reranker_model_path: str = ""  # 本地模型路径，为空则从 HuggingFace 下载
+    reranker_backend: str = "cross-encoder"  # cross-encoder / llm / heuristic
+    reranker_model: str = "BAAI/bge-reranker-base"
+    reranker_model_weight: float = 0.7  # 模型分权重 (token分权重 = 1 - model_weight)
 
     # ── Embedding ──
     embedding_backend: str = "local"  # local / ollama / api

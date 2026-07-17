@@ -47,26 +47,24 @@ class MultiLayerRetriever:
     L2_THRESHOLD = 0.35
     L2_MIN_HITS = 1
 
-    def __init__(self, milvus_client=None, llm_client=None, bm25_index=None):
+    def __init__(self, milvus_client=None, llm_client=None, bm25_index=None, reranker=None):
         self.embedding = get_embedding()
         self.milvus = milvus_client
         self.llm = llm_client
         self.bm25 = bm25_index or _load_knowledge_bm25() or BM25Index()
         self._bm25_built = self.bm25.doc_count > 0
-
-        self.reranker = None
+        self.reranker = reranker  # 可选：Reranker 实例
 
     # ── 主入口 ──
 
     def retrieve(self, query: str, top_k: int = 10, mode: str = "parallel") -> dict:
-        """检索主入口（带 Self-Query 元数据过滤 + Reranker 重排序）
+        """检索主入口
 
         流程:
-          1. LLM 解析 query → 提取元数据过滤条件（Self-Query）
-          2. 内部先取更多文档 (top_k * 3, 至少 20) 保证召回率
-          3. 元数据过滤 → 语义空间收窄
-          4. Reranker 精确打分 → 精选 top_k
-          5. 句子窗口展开 → 拼接上下文
+          1. Multi-Query 复杂问题拆分
+          2. 并行语义 + BM25 检索
+          3. RRF 融合排序
+          4. 句子窗口展开 → 拼接上下文
         """
         semantic_query = query
 
@@ -97,6 +95,13 @@ class MultiLayerRetriever:
 
     def _post_process(self, result, query, top_k, retrieve_k, meta_filter):
         """检索后处理: 元数据过滤 → ReRank → 窗口展开"""
+        docs = result.get("docs", [])
+        # Reranker 重排序
+        if len(docs) > top_k and self.reranker:
+            docs = self.reranker.rerank(query, docs, top_k=top_k)
+            result["docs"] = docs
+            result["total"] = len(docs)
+
         # 元数据过滤（Self-Query）
         docs = result.get("docs", [])
         if meta_filter and docs:
@@ -107,13 +112,6 @@ class MultiLayerRetriever:
                 result["total"] = len(docs)
                 result["note"] = (result.get("note", "") + f" | MetaFilter {len(docs)}/{before}").strip()
                 logger.info("元数据过滤: {} → {} docs filter={}", before, len(docs), meta_filter)
-
-        # Reranker 重排序
-        if len(docs) > top_k and self.reranker:
-            docs = self.reranker.rerank(query, docs, top_k=top_k)
-            result["docs"] = docs
-            result["total"] = len(docs)
-            result["note"] = (result.get("note", "") + f" | Reranker {len(docs)}/{retrieve_k}").lstrip(" |").strip()
 
         # 句子窗口展开
         docs = result.get("docs", [])

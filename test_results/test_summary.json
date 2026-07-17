@@ -1,12 +1,11 @@
 {
-  "timestamp": "2026-07-17 14:13:57",
-  "total": 24,
-  "passed": 24,
+  "timestamp": "2026-07-17 18:00:28",
+  "total": 21,
+  "passed": 21,
   "failed": 0,
-  "duration_seconds": 11.1,
-  "milvus_available": true,
+  "duration_seconds": 0.3,
+  "milvus_available": false,
   "file_breakdown": {
-    "test_evaluation_metrics.py": 18,
-    "test_bm25.py": 6
+    "test_reranker.py": 21
   }
 }
