@@ -1,11 +1,14 @@
 {
-  "timestamp": "2026-07-17 18:00:28",
-  "total": 21,
-  "passed": 21,
-  "failed": 0,
-  "duration_seconds": 0.3,
+  "timestamp": "2026-07-17 19:20:44",
+  "total": 89,
+  "passed": 85,
+  "failed": 4,
+  "duration_seconds": 49.5,
   "milvus_available": false,
   "file_breakdown": {
-    "test_reranker.py": 21
+    "test_reranker.py": 21,
+    "test_retrieval_cascade.py": 45,
+    "test_retrieval.py": 12,
+    "test_retrieval_full.py": 11
   }
 }

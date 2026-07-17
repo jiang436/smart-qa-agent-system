@@ -33,7 +33,7 @@ class Reranker:
         self,
         backend: str = "cross-encoder",
         llm_client: Any = None,
-        model_name: str = "BAAI/bge-reranker-base",
+        model_name: str = "BAAI/bge-reranker-large",
     ):
         """
         Args:

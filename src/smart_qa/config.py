@@ -90,7 +90,7 @@ class Settings(BaseSettings):
 
     # ── Reranker ──
     reranker_backend: str = "cross-encoder"  # cross-encoder / llm / heuristic
-    reranker_model: str = "BAAI/bge-reranker-base"
+    reranker_model: str = "BAAI/bge-reranker-large"
     reranker_model_weight: float = 0.7  # 模型分权重 (token分权重 = 1 - model_weight)
 
     # ── Embedding ──
