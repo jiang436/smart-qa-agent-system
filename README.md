@@ -235,8 +235,11 @@ cd frontend && npm install && npm run dev            # 启动 http://localhost:5
 
 <div align="center">
 <img src="docs/images/第一层：验证核心链路.png"/>
+<p>第一层：核心链路验证</p>
+<br/>
 <img src="docs/images/第二层：验证检索质量.png"/>
-<p>第一层：核心链路验证 | 第二层：检索质量验证</p>
+<p>第二层：检索质量验证</p>
+<br/>
 <img src="docs/images/第三层：验证边界.png"/>
 <p>第三层：边界与异常路径验证</p>
 </div>
