@@ -280,7 +280,7 @@ cd frontend && npm install && npm run dev            # 启动 http://localhost:5
 | 后端测试用例 | 429 |
 | 前端测试用例 | 33 |
 | **总计** | **462** |
-| **通过率** | **93.2%** (400 passed / 29 failed / 21 skipped) |
+| **通过率** | **93.2%** (400 passed / 29 failed) |
 | 执行耗时 | ~90s（含 Milvus 集成测试） |
 
 > 29 个失败均为基础设施依赖（PostgreSQL/Milvus 连接），Mock 测试 100% 通过。
