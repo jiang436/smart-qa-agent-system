@@ -46,6 +46,10 @@ class _MockLLM:
 
         return AIMessage(content="")
 
+    def bind_tools(self, tools, **kwargs):
+        """Mock bind_tools — 返回自身，不报错"""
+        return self
+
 
 @lru_cache
 def get_llm_client():

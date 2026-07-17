@@ -99,6 +99,27 @@ async def advance_order(order_id: str, scenario: str = "normal", db: AsyncSessio
     return await _order_to_status_response(order, db)
 
 
+@router.delete("/orders/{order_id}")
+async def delete_order(order_id: str, db: AsyncSession = Depends(get_db)):
+    """删除订单及其物流记录"""
+    result = await db.execute(select(VirtualOrder).where(VirtualOrder.order_id == order_id))
+    order = result.scalar_one_or_none()
+    if order is None:
+        raise HTTPException(status_code=404, detail="订单不存在")
+
+    try:
+        from sqlalchemy import delete as sa_delete
+        await db.execute(sa_delete(LogisticsEvent).where(LogisticsEvent.order_id == order_id))
+        await db.execute(sa_delete(VirtualOrder).where(VirtualOrder.order_id == order_id))
+        await db.commit()
+        logger.info("订单已删除 order={}", order_id)
+        return {"status": "ok", "message": "订单已删除"}
+    except Exception as e:
+        await db.rollback()
+        logger.error("订单删除失败 order={} err={}", order_id, e)
+        raise HTTPException(status_code=500, detail="订单删除失败") from e
+
+
 async def _order_to_response(order: VirtualOrder, db: AsyncSession) -> OrderResponse:
     """将 ORM 订单转为响应"""
     events = await _get_events(order.order_id, db)

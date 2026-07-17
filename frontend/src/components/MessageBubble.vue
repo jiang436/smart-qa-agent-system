@@ -1,8 +1,14 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+import { marked } from 'marked'
 import type { Message } from '@/stores/chat'
 import IntentBadge from './IntentBadge.vue'
 
-defineProps<{ msg: Message }>()
+const props = defineProps<{ msg: Message }>()
+
+const renderedContent = computed(() => {
+  return marked(props.msg.content || '', { breaks: true })
+})
 </script>
 
 <template>
@@ -17,7 +23,7 @@ defineProps<{ msg: Message }>()
     >
       <IntentBadge v-if="msg.intent && msg.role === 'assistant'" :intent="msg.intent" class="mb-1.5" />
       <div v-if="msg.isStreaming" class="typing-cursor whitespace-pre-wrap break-words">{{ msg.content }}</div>
-      <div v-else class="whitespace-pre-wrap break-words">{{ msg.content }}</div>
+      <div v-else class="markdown-body break-words" v-html="renderedContent" />
     </div>
   </div>
 </template>

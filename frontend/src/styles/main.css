@@ -69,6 +69,51 @@ body {
 .token-enter {
   animation: token-in 0.15s ease-out;
 }
+
+/* ── Markdown 表格 ── */
+.markdown-body {
+  overflow-x: auto;
+  line-height: 1.7;
+}
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+  font-size: 0.8125rem;
+}
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--color-border);
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+}
+.markdown-body th {
+  background: var(--color-bg-secondary);
+  font-weight: 600;
+}
+.markdown-body tr:nth-child(even) {
+  background: var(--color-bg-primary);
+}
+.markdown-body code {
+  background: var(--color-bg-secondary);
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+.markdown-body p {
+  margin: 0.3rem 0;
+}
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 1.2rem;
+  margin: 0.3rem 0;
+}
+.markdown-body li {
+  margin: 0.15rem 0;
+}
+.markdown-body strong {
+  font-weight: 600;
+}
 @keyframes token-in {
   from { opacity: 0; transform: translateY(2px); }
   to { opacity: 1; transform: translateY(0); }

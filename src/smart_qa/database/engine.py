@@ -65,8 +65,17 @@ async def init_db(dsn: str | None = None):
             if not result.fetchone():
                 password_hash, salt = User.hash_password("admin")
                 await conn.execute(
-                    text("INSERT INTO users (username, password_hash, role, salt, display_name, created_at) VALUES (:u, :h, :r, :s, :d, :c)"),
-                    {"u": "admin", "h": password_hash, "r": "admin", "s": salt, "d": "管理员", "c": __import__("datetime").datetime.utcnow()},
+                    text(
+                        "INSERT INTO users (username, password_hash, role, salt, display_name, created_at) VALUES (:u, :h, :r, :s, :d, :c)"
+                    ),
+                    {
+                        "u": "admin",
+                        "h": password_hash,
+                        "r": "admin",
+                        "s": salt,
+                        "d": "管理员",
+                        "c": __import__("datetime").datetime.utcnow(),
+                    },
                 )
                 logger.info("默认管理员已创建: admin / admin")
         except Exception as e:

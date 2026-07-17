@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useAppStore } from '@/stores/app'
-import { getOrders, getOrderDetail, advanceOrder } from '@/api'
+import { getOrders, getOrderDetail, advanceOrder, deleteOrder } from '@/api'
 import type { OrderItem, LogisticsEventItem, OrderStatusResponse } from '@/api'
 
 const app = useAppStore()
@@ -69,7 +69,6 @@ async function handleAdvance(orderId: string) {
   detailLoading.value = true
   try {
     selectedOrder.value = await advanceOrder(orderId)
-    // 同步更新列表
     const idx = orders.value.findIndex(o => o.order_id === orderId)
     if (idx >= 0) {
       orders.value[idx].status = selectedOrder.value.status
@@ -78,6 +77,17 @@ async function handleAdvance(orderId: string) {
     errorMsg.value = '推进物流失败'
   }
   detailLoading.value = false
+}
+
+async function handleDelete(orderId: string) {
+  if (!confirm('确定删除此订单？物流记录也会一并清除。')) return
+  try {
+    await deleteOrder(orderId)
+    closeDetail()
+    fetchOrders()
+  } catch {
+    errorMsg.value = '删除失败'
+  }
 }
 
 function closeDetail() {
@@ -190,8 +200,13 @@ onMounted(fetchOrders)
 
           <!-- 底部按钮 -->
           <div class="flex items-center justify-between px-5 py-3 border-t border-slate-100 shrink-0">
-            <span class="text-[10px] text-slate-400">⚠️ 模拟数据，非真实物流</span>
+            <button
+              @click="handleDelete(selectedOrder.order_id)"
+              :disabled="detailLoading"
+              class="px-3 py-1.5 text-xs font-medium text-red-600 bg-red-50 rounded-lg hover:bg-red-100 disabled:opacity-40 transition-colors"
+            >🗑 删除</button>
             <div class="flex gap-2">
+              <span class="text-[10px] text-slate-400">⚠️ 模拟数据</span>
               <button
                 @click="handleAdvance(selectedOrder.order_id)"
                 :disabled="detailLoading || selectedOrder.status === 'delivered' || selectedOrder.status === 'refunded'"

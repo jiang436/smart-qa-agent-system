@@ -123,6 +123,16 @@ class RouterAgent:
             "原装",
             "第三方",
             "套装",
+            "订单",
+            "查订单",
+            "物流",
+            "到哪了",
+            "快递",
+            "确认下单",
+            "确认购买",
+            "现在下单",
+            "确认",
+            "下单",
         ],
     }
 
@@ -230,6 +240,12 @@ class RouterAgent:
             state["task_memory"] = {}
             logger.info("诊断中用户切换话题 query={}", query[:60])
         if task.get("pending_purchase"):
+            state["intent"] = "consumables"
+            return state
+
+        # ── 订单/物流查询 → 优先走耗材场景 ──
+        ORDER_TRACKING = ["订单", "物流", "到哪了", "快递", "运单", "跟踪", "签收"]
+        if any(kw in query for kw in ORDER_TRACKING):
             state["intent"] = "consumables"
             return state
 
@@ -347,12 +363,43 @@ class RouterAgent:
         except Exception:
             return True  # LLM 不可用时保守处理：认为是在回答
 
+    async def _is_continuing_scenario(self, query: str, scenario_ctx: dict) -> bool:
+        """判断用户消息是否在继续当前场景（而非切换话题）"""
+        last_action = scenario_ctx.get("last_action", "未知")
+        products = ", ".join(scenario_ctx.get("products_shown", []))
+        extra = scenario_ctx.get("extra", "")
+        prompt = (
+            "你是一个场景连续性判断器。当前正在耗材管理场景中。\n"
+            f"上轮动作: {last_action}\n"
+            f"上轮展示的产品: {products or '无'}\n"
+            f"{extra}\n"
+            f"用户刚才说: {query}\n\n"
+            "请判断用户这句话是否在继续当前的耗材购买流程（如回答是/否、"
+            "说数量、选配件、问价格、确认下单、查订单、看物流等），"
+            "还是提出了一个全新的无关话题。\n"
+            "只输出一个词：continue（继续当前场景）或 switch（切换到新话题）"
+        )
+        try:
+            response = await self.llm.ainvoke(prompt)
+            content = response.content if hasattr(response, "content") else str(response)
+            return "continue" in content.lower() and "switch" not in content.lower()
+        except Exception:
+            return True  # LLM 不可用时保守处理：认为在继续
+
     async def _classify_intent(self, query: str, history: str = "") -> str:
-        """意图分类: LLM 优先（语义理解），关键词兜底（无 LLM 时）"""
+        """意图分类: LLM 语义理解为主"""
         if self.llm:
             result = await self._llm_classify(query, history)
-            if result != "general":
+            if result in ("qa", "troubleshoot", "consumables", "device_control", "report"):
                 return result
+            # LLM 判 general（不确定/超出范围）→ 默认走 qa（知识问答）
+            # 选 qa 而非 general 的原因：
+            #   1. 用户来到这个系统大概率是问扫地机器人问题，qa 覆盖最广
+            #   2. general 场景的 handle_general() 会再次判断是否越界（is_out_of_scope），
+            #      误判 qa 但实际越界的问题会被二次兜底拦截
+            #   3. 即使真的是闲聊，HEPA 滤网知识库回答也比"您好有什么可以帮您"有用
+            return "qa"
+        # 无 LLM（测试模式等）→ 关键词匹配降级
         return self._keyword_classify(query)
 
     async def _llm_classify(self, query: str, history: str = "") -> str:

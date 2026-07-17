@@ -254,6 +254,11 @@ export async function advanceOrder(orderId: string, scenario = 'normal'): Promis
   return r.json()
 }
 
+export async function deleteOrder(orderId: string): Promise<{ status: string; message: string }> {
+  const r = await fetch(`${BASE}/orders/${orderId}`, { method: 'DELETE' })
+  return r.json()
+}
+
 // ── Search Logs ──
 
 export interface SearchLogEntry {
