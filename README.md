@@ -89,16 +89,16 @@
 ```mermaid
 flowchart LR
     U["用户"] --> API["FastAPI / SSE"]
-    API --> SEC["安全层<br>限流 / 注入检测 / 脱敏"]
-    SEC --> MR["Memory Reader<br>加载用户画像"]
-    MR --> RT{"Router Agent<br>意图分类"}
-    RT -->|"qa"| QA["QA Scenario<br>RAG 知识问答"]
-    RT -->|"troubleshoot"| TS["Troubleshoot<br>错误码匹配 + RAG"]
-    RT -->|"general"| GH["General Handler<br>寒暄 / 越界拒绝"]
-    QA --> GD["Guard Check<br>防循环检测"]
+    API --> SEC["安全层<br/>限流 / 注入检测 / 脱敏"]
+    SEC --> MR["Memory Reader<br/>加载用户画像"]
+    MR --> RT{"Router Agent<br/>意图分类"}
+    RT -->|"qa"| QA["QA Scenario<br/>RAG 知识问答"]
+    RT -->|"troubleshoot"| TS["Troubleshoot<br/>错误码匹配 + RAG"]
+    RT -->|"general"| GH["General Handler<br/>寒暄 / 越界拒绝"]
+    QA --> GD["Guard Check<br/>防循环检测"]
     TS --> GD
     GH --> GD
-    GD -->|"通过"| MW["Memory Writer<br>画像持久化"]
+    GD -->|"通过"| MW["Memory Writer<br/>画像持久化"]
     GD -->|"循环"| RT
 ```
 
@@ -106,17 +106,15 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    Q["用户查询"] --> L1{"L1 语义检索<br>BGE Embedding"}
-    L1 -->|"命中 ≥2 & 均分 ≥0.45"| OUT["返回结果"]
-    L1 -->|"不足"| L2{"L2 Query 改写<br>LLM 改写 + 同义词扩展"}
+    Q["用户查询"] --> L1{"L1 语义检索<br/>BGE Embedding"}
+    L1 -->|"命中"| OUT["返回结果"]
+    L1 -->|"不足"| L2{"L2 Query 改写<br/>LLM + 同义词扩展"}
     L2 -->|"命中"| OUT
-    L2 -->|"不足"| L3{"L3 BM25 关键词<br>倒排索引精确匹配"}
+    L2 -->|"不足"| L3{"L3 BM25 关键词<br/>倒排索引精确匹配"}
     L3 -->|"命中"| OUT
-    L3 -->|"不足"| L4["L4 LLM 兜底<br>基于模型自身知识"]
+    L3 -->|"不足"| L4["L4 LLM 兜底<br/>模型自身知识"]
     L4 --> OUT
-
-    L1 -.->|"并行"| L3
-    L1 -.->|"RRF 融合"| OUT
+    L1 -.->|"并行检索"| L3
     L3 -.->|"RRF 融合"| OUT
 ```
 
@@ -125,13 +123,13 @@ flowchart LR
 ```mermaid
 flowchart LR
     subgraph L1["L1 语义缓存"]
-        Cache["Redis / 本地<br>Cosine >0.95 命中"]
+        Cache["Redis / 本地<br/>Cosine >0.95 命中"]
     end
     subgraph L2["L2 短期记忆"]
-        STM["MemoryCompressor<br>最近 6 条 + LLM 摘要"]
+        STM["MemoryCompressor<br/>最近 6 条 + LLM 摘要"]
     end
     subgraph L3["L3 长期记忆"]
-        LTM["PostgresStore<br>User Profile 画像"]
+        LTM["PostgresStore<br/>User Profile 画像"]
     end
     Cache --> STM --> LTM
 ```
