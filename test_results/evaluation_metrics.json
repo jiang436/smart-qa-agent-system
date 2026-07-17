@@ -1,194 +1,31 @@
 {
-  "timestamp": "2026-07-17 14:13:57",
-  "ground_truth_queries": 12,
-  "retrieval": {
-    "recall_at_3": 0.75,
-    "recall_at_3_details": [
-      {
-        "query": "X30 Pro 定时清扫怎么设置",
-        "matched": 1,
-        "total_relevant": 2,
-        "recall": 0.5
-      },
-      {
-        "query": "E05错误码是什么故障",
-        "matched": 1,
-        "total_relevant": 1,
-        "recall": 1.0
-      },
-      {
-        "query": "边刷多久换一次",
-        "matched": 1,
-        "total_relevant": 1,
-        "recall": 1.0
-      },
-      {
-        "query": "HEPA滤网更换周期",
-        "matched": 1,
-        "total_relevant": 1,
-        "recall": 1.0
-      },
-      {
-        "query": "扫地机连不上WiFi怎么办",
-        "matched": 2,
-        "total_relevant": 2,
-        "recall": 1.0
-      },
-      {
-        "query": "扫地机器人回充失败",
-        "matched": 1,
-        "total_relevant": 1,
-        "recall": 1.0
-      },
-      {
-        "query": "拖布发黄洗不干净了",
-        "matched": 1,
-        "total_relevant": 1,
-        "recall": 1.0
-      },
-      {
-        "query": "X30 Pro 和 T10 对比哪个好",
-        "matched": 2,
-        "total_relevant": 2,
-        "recall": 1.0
-      },
-      {
-        "query": "扫地机噪音太大怎么办",
-        "matched": 0,
-        "total_relevant": 1,
-        "recall": 0.0
-      },
-      {
-        "query": "米家APP怎么绑定扫地机",
-        "matched": 1,
-        "total_relevant": 2,
-        "recall": 0.5
-      },
-      {
-        "query": "耗材是买原装还是第三方",
-        "matched": 1,
-        "total_relevant": 1,
-        "recall": 1.0
-      },
-      {
-        "query": "建图失败提示E06",
-        "matched": 0,
-        "total_relevant": 1,
-        "recall": 0.0
-      }
-    ],
-    "recall_at_5": 0.7917,
-    "precision_at_3": 0.4444,
-    "precision_at_5": 0.3833,
-    "mrr": 0.6472,
-    "mrr_per_query": {
-      "X30 Pro 定时清扫怎么设置": 1.0,
-      "E05错误码是什么故障": 0.5,
-      "边刷多久换一次": 0.5,
-      "HEPA滤网更换周期": 1.0,
-      "扫地机连不上WiFi怎么办": 1.0,
-      "扫地机器人回充失败": 0.5,
-      "拖布发黄洗不干净了": 1.0,
-      "X30 Pro 和 T10 对比哪个好": 1.0,
-      "扫地机噪音太大怎么办": 0.1,
-      "米家APP怎么绑定扫地机": 0.5,
-      "耗材是买原装还是第三方": 0.5,
-      "建图失败提示E06": 0.1667
-    },
-    "hit_at_5": 0.8333,
-    "keyword_coverage_at_5": 0.8333,
-    "irrelevant_query": {
-      "avg_score": 10.86,
-      "top_score": 16.64
-    }
+  "timestamp": "2026-07-17 20:33:15",
+  "queries": 12,
+  "bm25_only": {
+    "recall3": 0.6667,
+    "recall5": 0.75,
+    "precision3": 0.4167,
+    "precision5": 0.4,
+    "hit5": 0.75
   },
-  "faithfulness": {
-    "self_consistency": 1.0,
-    "citation_verification": {
-      "true_claim_verified": true,
-      "true_similarity": 0.7116,
-      "false_claim_verified": false,
-      "false_similarity": 0.5336
-    }
+  "semantic_only": {
+    "recall3": 0.75,
+    "recall5": 0.75,
+    "precision3": 0.5,
+    "precision5": 0.4667,
+    "hit5": 0.75
   },
-  "token_tracking": {
-    "system_prompts": {
-      "system_qa": {
-        "chars": 505,
-        "tokens": 280
-      },
-      "system_troubleshoot": {
-        "chars": 475,
-        "tokens": 267
-      },
-      "system_general": {
-        "chars": 437,
-        "tokens": 247
-      },
-      "cot_rag": {
-        "chars": 376,
-        "tokens": 201
-      },
-      "cot_router": {
-        "chars": 884,
-        "tokens": 392
-      },
-      "cot_troubleshoot": {
-        "chars": 262,
-        "tokens": 138
-      },
-      "welcome": {
-        "chars": 133,
-        "tokens": 74
-      },
-      "out_of_scope": {
-        "chars": 64,
-        "tokens": 40
-      }
-    },
-    "system_total_tokens": 1639,
-    "query_stats": {
-      "count": 12,
-      "avg": 5.9,
-      "min": 4,
-      "max": 7,
-      "p50": 6
-    },
-    "knowledge_base": {
-      "total_docs": 121,
-      "total_tokens": 11271,
-      "avg_per_doc": 93.1,
-      "median": 65,
-      "p90": 197,
-      "max": 370
-    },
-    "top5_retrieval_budget": 466,
-    "estimated_per_request": 2114
+  "rrf_fusion": {
+    "recall3": 0.75,
+    "recall5": 0.75,
+    "precision3": 0.5556,
+    "precision5": 0.4667,
+    "hit5": 0.75
   },
-  "performance": {
-    "bm25_index": {
-      "docs": 121,
-      "terms": 6343,
-      "avg_doc_len": 208.5,
-      "index_size_kb": 180.2
-    },
-    "bm25_search_ms": {
-      "avg_ms": 0.22,
-      "min_ms": 0.11,
-      "max_ms": 0.35,
-      "p50_ms": 0.23,
-      "p95_ms": 0.35,
-      "samples": 12
-    },
-    "bm25_throughput_qps": 4722.6,
-    "full_pipeline_ms": {
-      "avg": 0.7,
-      "min": 0.2,
-      "max": 3.5
-    },
-    "context_size": {
-      "avg_chars": 1264.8,
-      "avg_tokens": 316
-    }
+  "comparison": {
+    "file_precision3": 0.5556,
+    "file_precision5": 0.5333,
+    "chunk_precision3": 0.5556,
+    "chunk_precision5": 0.4667
   }
 }

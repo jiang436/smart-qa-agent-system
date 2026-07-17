@@ -1,18 +1,15 @@
 # 测试报告
 
-**时间**: 2026-07-17 19:20:44
+**时间**: 2026-07-17 20:33:15
 
-**总计**: 89 | ✅ 85 通过 | ❌ 4 失败
+**总计**: 4 | ✅ 4 通过 | ❌ 0 失败
 
-**耗时**: 49.5s
+**耗时**: 15.6s
 
 ## 按文件统计
 
 | 文件 | 测试数 |
 |------|--------|
-| test_reranker.py | 21 |
-| test_retrieval.py | 12 |
-| test_retrieval_cascade.py | 45 |
-| test_retrieval_full.py | 11 |
+| test_evaluation_metrics.py | 4 |
 
 > ⚠️ Milvus 未运行，知识库相关测试可能失败。
