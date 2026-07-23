@@ -83,7 +83,7 @@ class RAGAgent:
             return state
 
         # 从上一轮回答中提取话题词，注入检索查询（解决"多久洗一次"丢失上下文）
-        enriched_query = self._enrich_query_with_history(query, state)
+        enriched_query = await self._enrich_query_with_history(query, state)
 
         try:
             cot_prompt = load_cot_prompt("rag")
@@ -146,7 +146,10 @@ class RAGAgent:
         assistant_msg = Message(role="assistant", content=final_answer)
 
         existing = state.get("short_term")
-        if existing and hasattr(existing, "recent_messages"):
+        if isinstance(existing, dict) and "recent_messages" in existing:
+            all_msgs = [Message(role=m["role"], content=m["content"]) for m in existing["recent_messages"]]
+            all_msgs += [user_msg, assistant_msg]
+        elif existing and hasattr(existing, "recent_messages"):
             all_msgs = existing.recent_messages + [user_msg, assistant_msg]
         else:
             all_msgs = [user_msg, assistant_msg]
@@ -169,7 +172,7 @@ class RAGAgent:
     def _extract_query(self, state: dict) -> str:
         return extract_user_query(state)
 
-    def _enrich_query_with_history(self, query: str, state: dict) -> str:
+    async def _enrich_query_with_history(self, query: str, state: dict) -> str:
         """参照 RAGFlow full_question: LLM 重写追问为完整独立查询"""
         if len(query) > 15:
             return query
@@ -200,7 +203,7 @@ class RAGAgent:
                 f"最新问题：{query}\n"
                 "改写后："
             )
-            resp = self.llm.invoke(prompt)
+            resp = await self.llm.ainvoke(prompt)
             rewritten = (resp.content if hasattr(resp, "content") else str(resp)).strip()
             if rewritten and len(rewritten) <= 100 and rewritten != query:
                 logger.info("查询重写: {} -> {}", query[:30], rewritten[:80])

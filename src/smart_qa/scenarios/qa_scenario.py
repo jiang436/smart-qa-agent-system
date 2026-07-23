@@ -64,7 +64,7 @@ class QAScenario:
         """多轮对话查询重写，确保缓存 key 包含上下文信息"""
         try:
             rag = QAScenario._get_rag_agent()
-            return rag._enrich_query_with_history(query, state)
+            return await rag._enrich_query_with_history(query, state)
         except Exception:
             return query
 
