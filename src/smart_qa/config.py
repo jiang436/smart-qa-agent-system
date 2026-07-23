@@ -22,8 +22,6 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_base_url: str = ""
     lightweight_model: str = "deepseek-chat"
-    heavy_model: str = "deepseek-chat"
-
     # ── Database ──
     postgres_dsn: str = "postgresql+asyncpg://user:password@localhost:5432/agent"
     redis_url: str = "redis://localhost:6379/0"
@@ -59,7 +57,6 @@ class Settings(BaseSettings):
     agent_timeout: int = 60  # LoopDetector 硬超时 (秒)
     loop_semantic_threshold: float = 0.92  # 语义循环检测相似度阈值
     loop_repeated_tool_threshold: int = 3  # 连续相同工具调用触发警告
-    loop_dead_end_window: int = 5  # 死胡同检测窗口 (最近 N 步)
 
     # ── Retrieval ──
     retrieval_l1_threshold: float = 0.45  # L1 语义检索平均分阈值
@@ -68,8 +65,6 @@ class Settings(BaseSettings):
     retrieval_l2_min_docs: int = 1  # L2 改写检索最少文档数
     retrieval_top_k: int = 5  # 默认返回文档数
     retrieval_crag_max_retries: int = 2  # C-RAG 最大重试次数
-    retrieval_crag_quality_high: float = 0.5  # C-RAG 高质量阈值
-    retrieval_crag_quality_medium: float = 0.3  # C-RAG 中等质量阈值
 
     # ── Chunking ──
     chunk_size: int = 800
@@ -78,12 +73,6 @@ class Settings(BaseSettings):
     # ── Memory ──
     short_term_window: int = 6  # 短期记忆窗口 (消息数)
     cache_lru_capacity: int = 1000  # 本地缓存最大条目
-
-    # ── Citation ──
-    citation_verification_threshold: float = 0.6  # 引用验证相似度阈值
-
-    # ── Troubleshoot ──
-    troubleshoot_max_rounds: int = 5  # 最大诊断轮次
 
     # ── Reflection ──
     reflection_max_rounds: int = 3  # 自我反思最大迭代次数

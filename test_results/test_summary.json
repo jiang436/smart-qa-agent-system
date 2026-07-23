@@ -1,11 +1,14 @@
 {
-  "timestamp": "2026-07-17 20:33:15",
-  "total": 4,
-  "passed": 4,
-  "failed": 0,
-  "duration_seconds": 15.6,
+  "timestamp": "2026-07-23 15:56:25",
+  "total": 82,
+  "passed": 40,
+  "failed": 42,
+  "duration_seconds": 148.1,
   "milvus_available": false,
   "file_breakdown": {
-    "test_evaluation_metrics.py": 4
+    "test_retrieval.py": 12,
+    "test_retrieval_full.py": 11,
+    "test_retrieval_cascade.py": 45,
+    "test_rag_agent.py": 14
   }
 }

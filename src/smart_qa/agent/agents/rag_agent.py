@@ -23,6 +23,7 @@ from smart_qa.agent.agents.reflection import ReflectionAgent
 from smart_qa.agent.persona import get_system_prompt
 from smart_qa.agent.prompts.loader import load_cot_prompt
 from smart_qa.agent.state_utils import extract_user_query
+from smart_qa.config import settings
 from smart_qa.knowledge.vector_store import get_embedding
 from smart_qa.memory.cache import SemanticCache
 from smart_qa.memory.short_term import MemoryCompressor, Message
@@ -93,7 +94,7 @@ class RAGAgent:
 
         # ── C-RAG: 检索 → 评估 → 修正 ──
         retrieval_result, docs, retrieval_source = await self._crag_retrieve(
-            enriched_query, top_k=5, max_retries=2
+            enriched_query, top_k=settings.retrieval_top_k, max_retries=settings.retrieval_crag_max_retries
         )
 
         logger.info("检索完成 source={} hits={}", retrieval_source, len(docs))

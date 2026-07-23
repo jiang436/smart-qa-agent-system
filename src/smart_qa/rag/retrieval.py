@@ -42,18 +42,26 @@ _collect_knowledge_texts = collect_knowledge_texts
 class MultiLayerRetriever:
     """多层召回引擎: 语义→改写→关键词→LLM"""
 
-    L1_THRESHOLD = 0.45
-    L1_MIN_HITS = 2
-    L2_THRESHOLD = 0.35
-    L2_MIN_HITS = 1
-
     def __init__(self, milvus_client=None, llm_client=None, bm25_index=None, reranker=None):
         self.embedding = get_embedding()
         self.milvus = milvus_client
         self.llm = llm_client
         self.bm25 = bm25_index or _load_knowledge_bm25() or BM25Index()
         self._bm25_built = self.bm25.doc_count > 0
-        self.reranker = reranker  # 可选：Reranker 实例
+
+        # 从 config 读取阈值（可运行时覆盖）
+        self.l1_threshold = settings.retrieval_l1_threshold
+        self.l1_min_hits = settings.retrieval_l1_min_docs
+        self.l2_threshold = settings.retrieval_l2_threshold
+        self.l2_min_hits = settings.retrieval_l2_min_docs
+
+        if reranker is not None:
+            self.reranker = reranker
+        else:
+            from smart_qa.rag.reranker import Reranker
+            self.reranker = Reranker(backend=settings.reranker_backend, model_name=settings.reranker_model)
+            self.reranker.model_weight = settings.reranker_model_weight
+            self.reranker.token_weight = 1.0 - settings.reranker_model_weight
 
     # ── 主入口 ──
 
@@ -64,54 +72,49 @@ class MultiLayerRetriever:
           1. Multi-Query 复杂问题拆分
           2. 并行语义 + BM25 检索
           3. RRF 融合排序
-          4. 句子窗口展开 → 拼接上下文
+          4. Reranker 重排序
+          5. 句子窗口展开 → 拼接上下文
         """
-        semantic_query = query
-
         # 0.5 Multi-Query: 仅复杂/长查询启用
         sub_queries = self._decompose_query(query) if (self.llm and len(query) > 15) else []
         if sub_queries:
             all_docs = []
             for sq in sub_queries:
-                sub_result = self._parallel_retrieve(sq, sq, max(5, top_k))
+                sub_result = self._parallel_retrieve(sq, max(5, top_k))
                 all_docs.extend(sub_result.get("docs", []))
-            # 去重合并
             merged = self._dedup_and_sort(all_docs)[:top_k * 3]
             if merged:
                 result = self._build(merged, "multi_query", "high", query,
                                      f"拆分为 {len(sub_queries)} 个子问题, 合并 {len(merged)} 条")
                 logger.info("Multi-Query: {} → {} sub-queries, merged {} docs",
                              query[:60], len(sub_queries), len(merged))
-                return result
-            else:
-                sub_queries = []  # 合并无结果 → 降级走正常检索
+                return self._post_process(result, query, top_k)
+            # 合并无结果 → 降级走正常检索
+
+        import time as _time
+        _t0 = _time.perf_counter()
 
         if mode == "parallel":
-            result = self._parallel_retrieve(query, semantic_query, top_k)
+            result = self._parallel_retrieve(query, top_k)
         else:
-            result = self._cascade_retrieve(query, semantic_query, top_k)
+            result = self._cascade_retrieve(query, top_k)
 
+        result = self._post_process(result, query, top_k)
+
+        _elapsed = (_time.perf_counter() - _t0) * 1000
+        logger.info("检索完成 source={} total={} latency={:.1f}ms query={}",
+                     result.get("source", "?"), result.get("total", 0),
+                     _elapsed, query[:60])
         return result
 
-    def _post_process(self, result, query, top_k, retrieve_k, meta_filter):
-        """检索后处理: 元数据过滤 → ReRank → 窗口展开"""
+    def _post_process(self, result, query, top_k):
+        """检索后处理: Reranker 重排 → 窗口展开"""
         docs = result.get("docs", [])
         # Reranker 重排序
         if len(docs) > top_k and self.reranker:
             docs = self.reranker.rerank(query, docs, top_k=top_k)
             result["docs"] = docs
             result["total"] = len(docs)
-
-        # 元数据过滤（Self-Query）
-        docs = result.get("docs", [])
-        if meta_filter and docs:
-            before = len(docs)
-            docs = self._apply_metadata_filter(docs, meta_filter)
-            if docs:
-                result["docs"] = docs
-                result["total"] = len(docs)
-                result["note"] = (result.get("note", "") + f" | MetaFilter {len(docs)}/{before}").strip()
-                logger.info("元数据过滤: {} → {} docs filter={}", before, len(docs), meta_filter)
 
         # 句子窗口展开
         docs = result.get("docs", [])
@@ -129,7 +132,7 @@ class MultiLayerRetriever:
         """
         return await asyncio.to_thread(self.retrieve, query, top_k, mode)
 
-    def _cascade_retrieve(self, query: str, hyde_query: str = "", top_k: int = 10) -> dict:
+    def _cascade_retrieve(self, query: str, top_k: int = 10) -> dict:
         """四层召回，逐层降级
 
         Returns:
@@ -142,17 +145,15 @@ class MultiLayerRetriever:
                 "total": int,
             }
         """
-        # ═══ L1: 语义检索（HyDE 优先）═══
-        search_query = hyde_query if hyde_query else query
-        source_tag = "L1_semantic" if search_query == query else "L1_semantic+hyde"
-        logger.info("L1 语义检索 hyde={} query={}", hyde_query != "", search_query[:60])
-        docs = self._semantic_search(search_query, top_k)
+        # ═══ L1: 语义检索 ═══
+        logger.info("L1 语义检索 query={}", query[:60])
+        docs = self._semantic_search(query, top_k)
 
-        if len(docs) >= self.L1_MIN_HITS and self._avg_score(docs) >= self.L1_THRESHOLD:
+        if len(docs) >= self.l1_min_hits and self._avg_score(docs) >= self.l1_threshold:
             logger.info("L1 命中 hits={} avg_score={:.3f}", len(docs), self._avg_score(docs))
             return self._build(
-                docs, source_tag, "high", query,
-                f"{'HyDE' if hyde_query else '语义'}检索命中 {len(docs)} 条, 平均分 {self._avg_score(docs):.2f}"
+                docs, "L1_semantic", "high", query,
+                f"语义检索命中 {len(docs)} 条, 平均分 {self._avg_score(docs):.2f}"
             )
 
         # ═══ L2: Query 改写 + Expansion ═══
@@ -162,7 +163,7 @@ class MultiLayerRetriever:
 
         if rewritten and rewritten != query:
             docs_rw = self._semantic_search(rewritten, top_k)
-            if len(docs_rw) >= self.L2_MIN_HITS and self._avg_score(docs_rw) >= self.L2_THRESHOLD:
+            if len(docs_rw) >= self.l2_min_hits and self._avg_score(docs_rw) >= self.l2_threshold:
                 logger.info("L2 命中 (改写) hits={} avg_score={:.3f}", len(docs_rw), self._avg_score(docs_rw))
                 return self._build(
                     docs_rw, "L2_rewrite", "medium", rewritten, f"原始 query '{query[:40]}' → 改写为 '{rewritten[:40]}'"
@@ -171,7 +172,7 @@ class MultiLayerRetriever:
         # 改写没命中 → 用扩展后的 query 再试
         if expanded and expanded != query:
             docs_exp = self._semantic_search(expanded, top_k)
-            if len(docs_exp) >= self.L2_MIN_HITS and self._avg_score(docs_exp) >= self.L2_THRESHOLD:
+            if len(docs_exp) >= self.l2_min_hits and self._avg_score(docs_exp) >= self.l2_threshold:
                 logger.info("L2 命中 (扩展) hits={} avg_score={:.3f}", len(docs_exp), self._avg_score(docs_exp))
                 return self._build(
                     docs_exp, "L2_rewrite", "medium", expanded, f"Query Expansion: '{query[:30]}' → '{expanded[:50]}'"
@@ -180,9 +181,9 @@ class MultiLayerRetriever:
         # 合并改写 + 扩展 + 原始结果中的高分段
         all_docs = docs + (docs_rw if rewritten else []) + (docs_exp if expanded else [])
         all_docs = self._dedup_and_sort(all_docs)[:top_k]
-        if len(all_docs) >= self.L2_MIN_HITS:
+        if len(all_docs) >= self.l2_min_hits:
             avg = sum(d.get("score", 0) for d in all_docs) / len(all_docs)
-            if avg >= self.L2_THRESHOLD:
+            if avg >= self.l2_threshold:
                 return self._build(
                     all_docs, "L2_rewrite", "medium", query, f"合并多路召回 {len(all_docs)} 条, 平均分 {avg:.2f}"
                 )
@@ -393,21 +394,16 @@ class MultiLayerRetriever:
 
     # ── 并行检索 + RRF 融合 ──
 
-    def _parallel_retrieve(self, query: str, hyde_query: str = "", top_k: int = 10) -> dict:
-        """并行检索 + RRF 融合排序（HyDE 增强语义检索）
+    def _parallel_retrieve(self, query: str, top_k: int = 10) -> dict:
+        """并行检索 + RRF 融合排序
 
         流程:
-          1. HyDE 生成假设答案（可选）→ 替代 query 做语义检索
-          2. 并行: 语义检索 + BM25 关键词
-          3. RRF 融合排序
+          1. 并行: 语义检索 + BM25 关键词
+          2. RRF 融合排序
         """
-        hyde_used = hyde_query and hyde_query != query
-        logger.info("并行检索+RRF融合 query={} hyde={}", query[:60], hyde_used)
+        logger.info("并行检索+RRF融合 query={}", query[:60])
 
-        # 语义检索用 HyDE 向量，BM25 用原始 query（保留精确匹配）
-        semantic_query = hyde_query if hyde_query else query
-
-        semantic_docs = self._semantic_search(semantic_query, top_k=10)
+        semantic_docs = self._semantic_search(query, top_k=10)
         bm25_docs = self.bm25.search(query, top_k=10) if self._bm25_built else []
 
         logger.info("并行检索 semantic={} bm25={}", len(semantic_docs), len(bm25_docs))

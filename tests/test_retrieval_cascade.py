@@ -57,7 +57,7 @@ class TestCascadeRetrieval:
         ]):
             result = r._cascade_retrieve("怎么设置定时清扫", top_k=5)
 
-        assert result["source"] in ("L1_semantic", "L1_semantic+hyde")
+        assert result["source"] == "L1_semantic"
         assert result["confidence"] == "high"
         assert result["total"] >= 2
 
